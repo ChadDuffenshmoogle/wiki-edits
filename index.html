@@ -41,6 +41,7 @@
   .result .verdict.good { color: var(--good); }
   .result .verdict.bad { color: var(--bad); }
   .result p { margin: 6px 0; color: var(--muted); font-size: 0.92rem; }
+  #summary strong { color: var(--ink); }
   .next { margin-top: 12px; font: 600 1rem system-ui, sans-serif; background: var(--accent); color: #fff; border: 0;
           border-radius: 6px; padding: 10px 18px; cursor: pointer; }
   .status { font-family: system-ui, sans-serif; color: var(--muted); padding: 30px 0; }
@@ -58,7 +59,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v7</div>
+<div class="ver">v9</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?</p>
@@ -95,7 +96,7 @@
 
 <script>
 const API = "https://en.wikipedia.org/w/api.php";
-let pool = [];
+let poolPromise = null;
 let prefetched = null, prefetchMode = null, ticket = 0;
 let mode = "revert";
 let score = 0, played = 0, streak = 0;
@@ -112,14 +113,34 @@ async function api(params) {
   return data;
 }
 
-// Articles that were reverted recently, asked from Wikipedia each time (nothing is hardcoded).
-async function pickTitle(busyChance) {
-  if (Math.random() < busyChance) {
-    if (pool.length === 0) {
-      const data = await api({ action: "query", list: "recentchanges", rctag: "mw-reverted",
-        rcnamespace: "0", rctype: "edit", rclimit: "500", rcprop: "title" });
-      pool = [...new Set(data.query.recentchanges.map((c) => c.title))];
+// Well-known articles: last month's most-viewed pages, asked from Wikipedia (nothing is hardcoded).
+// If that fails, fall back to articles that were reverted recently.
+async function loadPool() {
+  try {
+    const d = new Date();
+    d.setUTCDate(1);
+    d.setUTCMonth(d.getUTCMonth() - 1);
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const res = await fetch("https://wikimedia.org/api/rest_v1/metrics/pageviews/top/en.wikipedia/all-access/" +
+      d.getUTCFullYear() + "/" + mm + "/all-days");
+    if (res.ok) {
+      const data = await res.json();
+      const list = data.items[0].articles.map((a) => a.article.replace(/_/g, " "))
+        .filter((t) => t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t));
+      if (list.length > 0) return list;
     }
+  } catch (e) {
+    console.error(e);
+  }
+  const data = await api({ action: "query", list: "recentchanges", rctag: "mw-reverted",
+    rcnamespace: "0", rctype: "edit", rclimit: "500", rcprop: "title" });
+  return [...new Set(data.query.recentchanges.map((c) => c.title))];
+}
+
+async function pickTitle(popularChance) {
+  if (Math.random() < popularChance) {
+    if (!poolPromise) poolPromise = loadPool();
+    const pool = await poolPromise.catch(() => []);
     if (pool.length > 0) return pool[Math.floor(Math.random() * pool.length)];
   }
   const data = await api({ action: "query", list: "random", rnnamespace: "0", rnlimit: "1" });
@@ -214,7 +235,7 @@ function renderParts(el, parts) {
 
 // Ask Wikipedia for just the changed lines (small), instead of downloading two whole articles.
 async function diffPair(params) {
-  const data = await api({ action: "compare", prop: "diff", ...params });
+  const data = await api({ action: "compare", prop: "diff|timestamp", ...params });
   const html = (data.compare && data.compare.body) || "";
   const doc = new DOMParser().parseFromString("<table>" + html + "</table>", "text/html");
   const rows = [];
@@ -226,10 +247,29 @@ async function diffPair(params) {
   for (const [r, a] of rows) {
     const cr = clean(r), ca = clean(a);
     if (r.length > 30 && a.length > 30 && cr && ca && cr !== ca && cr.length < 500 && ca.length < 500 && similarity(cr, ca) > 0.5) {
-      return { rawA: r, rawB: a, textA: cr, textB: ca };
+      return { rawA: r, rawB: a, textA: cr, textB: ca, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
     }
   }
   return null;
+}
+
+// Show a timestamp as a short date and time, e.g. "Mar 3, 2015, 4:20 PM".
+function niceTime(ts) {
+  if (!ts) return "";
+  return new Date(ts).toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+// Turn an edit note's wiki code into plain words.
+function cleanComment(c) {
+  return c
+    .replace(/\s*\(\[\[User talk:[^\]]*\]\]\)/g, "")
+    .replace(/\s*\(\[\[WP:[^\]]*\]\]\)/g, "")
+    .replace(/\/\*.*?\*\//g, "")
+    .replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, "$1")
+    .replace(/^Reverted (\d+ )?(good faith )?edits? by [^:]*(:|$)\s*/i, "")
+    .replace(/'{2,}/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function wikiUrl(title) {
@@ -238,7 +278,7 @@ function wikiUrl(title) {
 
 // Reverts mode: a sentence that was changed, then changed back.
 async function makeRevertRound() {
-  const title = await pickTitle(0.8);
+  const title = await pickTitle(0.9);
   const found = (await findReverts(title)).slice(0, 4);
   for (const rc of found) {
     const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) });
@@ -250,12 +290,13 @@ async function makeRevertRound() {
     const [partsA, partsB] = diffWords(pair.textA, pair.textB);
     return {
       title: title,
-      summary: rc.comment ? "The editor who changed it back wrote: " + rc.comment : "The editor left no note.",
+      summary: cleanComment(rc.comment) ? "Note from the editor who changed it back: " : "The editor left no note.",
+      note: cleanComment(rc.comment),
       diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
         "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
       options: [
-        { text: pair.textA, parts: partsA, survived: revertedAlive, note: "this one was undone" },
-        { text: pair.textB, parts: partsB, survived: restoredAlive, note: "this one was put back" }
+        { text: pair.textA, parts: partsA, survived: revertedAlive, note: "this one was undone", when: niceTime(pair.timeA) },
+        { text: pair.textB, parts: partsB, survived: restoredAlive, note: "this one was put back", when: niceTime(pair.timeB) }
       ].sort(() => Math.random() - 0.5)
     };
   }
@@ -264,7 +305,7 @@ async function makeRevertRound() {
 
 // Old vs now mode: a sentence from a random old version against the same spot today.
 async function makeOldRound() {
-  const title = await pickTitle(0.7);
+  const title = await pickTitle(0.9);
   const data = await api({
     action: "query", prop: "revisions", titles: title,
     rvlimit: "1", rvdir: "older", rvstart: randomTime(), rvprop: "ids|timestamp"
@@ -276,12 +317,12 @@ async function makeOldRound() {
   const [partsA, partsB] = diffWords(pair.textA, pair.textB);
   return {
     title: title,
-    summary: "The older version is from " + new Date(rev.timestamp).toLocaleDateString() + ".",
+    summary: "The older version is from " + niceTime(rev.timestamp) + ".",
     diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
       "&diff=cur&oldid=" + rev.revid,
     options: [
-      { text: pair.textA, parts: partsA, survived: false, note: "an old version" },
-      { text: pair.textB, parts: partsB, survived: true, note: "the current version" }
+      { text: pair.textA, parts: partsA, survived: false, note: "an old version", when: niceTime(pair.timeA) },
+      { text: pair.textB, parts: partsB, survived: true, note: "the current version", when: niceTime(pair.timeB) }
     ].sort(() => Math.random() - 0.5)
   };
 }
@@ -345,11 +386,16 @@ function guess(i) {
     if (k === i) btn.classList.add("picked");
     btn.querySelector(".tag").textContent =
       "Version " + (k + 1) + (opt.survived ? " (on the page today)" : " (gone)") +
-      " - " + opt.note;
+      " - " + opt.note + (opt.when ? " - " + opt.when : "");
   });
   $("verdict").textContent = correct ? "You got it." : "Not this time.";
   $("verdict").className = "verdict " + (correct ? "good" : "bad");
   $("summary").textContent = current.summary;
+  if (current.note) {
+    const bold = document.createElement("strong");
+    bold.textContent = current.note;
+    $("summary").appendChild(bold);
+  }
   $("diffLink").href = current.diffUrl;
   $("score").textContent = score;
   $("played").textContent = played;
