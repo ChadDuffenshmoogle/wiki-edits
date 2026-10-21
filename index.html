@@ -58,7 +58,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v6</div>
+<div class="ver">v7</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?</p>
@@ -95,7 +95,8 @@
 
 <script>
 const API = "https://en.wikipedia.org/w/api.php";
-let queue = [];
+let pool = [];
+let prefetched = null, prefetchMode = null, ticket = 0;
 let mode = "revert";
 let score = 0, played = 0, streak = 0;
 let current = null;
@@ -111,56 +112,47 @@ async function api(params) {
   return data;
 }
 
-// Busy articles that get a lot of reverts (mixed in with totally random ones).
-const FAMOUS = ["Donald Trump","Taylor Swift","Elon Musk","Pizza","Coffee","Cat","Dog","Bitcoin","Climate change",
-  "World War II","Barack Obama","Michael Jackson","Pok\u00e9mon","Minecraft","The Beatles","Association football",
-  "Chocolate","Google","Apple Inc.","Star Wars","Harry Potter","Marvel Cinematic Universe","Albert Einstein",
-  "Napoleon","Pluto","Moon","Banana","Pasta","Hamburger","Wikipedia","YouTube","Facebook","Pepsi","Coca-Cola"];
-
-async function pickTitle(famousChance) {
-  if (Math.random() < famousChance) return FAMOUS[Math.floor(Math.random() * FAMOUS.length)];
+// Articles that were reverted recently, asked from Wikipedia each time (nothing is hardcoded).
+async function pickTitle(busyChance) {
+  if (Math.random() < busyChance) {
+    if (pool.length === 0) {
+      const data = await api({ action: "query", list: "recentchanges", rctag: "mw-reverted",
+        rcnamespace: "0", rctype: "edit", rclimit: "500", rcprop: "title" });
+      pool = [...new Set(data.query.recentchanges.map((c) => c.title))];
+    }
+    if (pool.length > 0) return pool[Math.floor(Math.random() * pool.length)];
+  }
   const data = await api({ action: "query", list: "random", rnnamespace: "0", rnlimit: "1" });
   return data.query.random[0].title;
 }
 
-// A random moment since Wikipedia started in 2001.
+// A random moment since Wikipedia started (January 2001).
 function randomTime() {
-  const first = Date.UTC(2002, 0, 1);
+  const first = Date.UTC(2001, 0, 15);
   return new Date(first + Math.random() * (Date.now() - first)).toISOString();
 }
 
 // Look through an article's history for reverts: edits tagged as reverts, or edits that
 // restored an exact earlier copy of the page (this catches the pre-tag days too).
-async function refillQueue() {
+async function findReverts(title) {
   const tags = ["mw-manual-revert", "mw-undo", "mw-rollback"];
-  for (let tries = 0; tries < 15; tries++) {
-    try {
-      const title = await pickTitle(0.5);
-      const data = await api({
-        action: "query", prop: "revisions", titles: title,
-        rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|tags|comment|sha1"
-      });
-      const revs = data.query.pages[0].revisions || [];
-      const seen = new Map();
-      const found = [];
-      revs.forEach((r, i) => {
-        const tagged = r.tags && r.tags.some((t) => tags.includes(t));
-        const earlier = r.sha1 ? seen.get(r.sha1) : undefined;
-        const identity = earlier !== undefined && earlier < i - 1;
-        if (r.parentid && (tagged || identity)) {
-          found.push({ title: title, revid: r.revid, old_revid: r.parentid, comment: r.comment || "" });
-        }
-        if (r.sha1) seen.set(r.sha1, i);
-      });
-      if (found.length > 0) {
-        queue = found.sort(() => Math.random() - 0.5);
-        return;
-      }
-    } catch (e) {
-      console.error(e);
+  const data = await api({
+    action: "query", prop: "revisions", titles: title,
+    rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|tags|comment|sha1"
+  });
+  const revs = data.query.pages[0].revisions || [];
+  const seen = new Map();
+  const found = [];
+  revs.forEach((r, i) => {
+    const tagged = r.tags && r.tags.some((t) => tags.includes(t));
+    const earlier = r.sha1 ? seen.get(r.sha1) : undefined;
+    const identity = earlier !== undefined && earlier < i - 1;
+    if (r.parentid && (tagged || identity)) {
+      found.push({ title: title, revid: r.revid, old_revid: r.parentid, comment: r.comment || "" });
     }
-  }
-  throw new Error("Could not find any reverts in Wikipedia's history");
+    if (r.sha1) seen.set(r.sha1, i);
+  });
+  return found.sort(() => Math.random() - 0.5);
 }
 
 async function getText(params) {
@@ -220,18 +212,21 @@ function renderParts(el, parts) {
   });
 }
 
-// Find one line that differs between the two versions.
-function findPair(oldText, newText) {
-  const oldLines = oldText.split("\n"), newLines = newText.split("\n");
-  const oldSet = new Set(oldLines), newSet = new Set(newLines);
-  const removed = oldLines.filter((l) => l.length > 30 && !newSet.has(l));
-  const added = newLines.filter((l) => l.length > 30 && !oldSet.has(l));
-  for (const r of removed) {
-    for (const a of added) {
-      const cr = clean(r), ca = clean(a);
-      if (cr && ca && cr !== ca && cr.length < 500 && ca.length < 500 && similarity(cr, ca) > 0.5) {
-        return { rawA: r, rawB: a, textA: cr, textB: ca };
-      }
+// Ask Wikipedia for just the changed lines (small), instead of downloading two whole articles.
+async function diffPair(params) {
+  const data = await api({ action: "compare", prop: "diff", ...params });
+  const html = (data.compare && data.compare.body) || "";
+  const doc = new DOMParser().parseFromString("<table>" + html + "</table>", "text/html");
+  const rows = [];
+  doc.querySelectorAll("tr").forEach((tr) => {
+    const d = tr.querySelector("td.diff-deletedline"), a = tr.querySelector("td.diff-addedline");
+    if (d && a) rows.push([d.textContent.trim(), a.textContent.trim()]);
+  });
+  rows.sort(() => Math.random() - 0.5);
+  for (const [r, a] of rows) {
+    const cr = clean(r), ca = clean(a);
+    if (r.length > 30 && a.length > 30 && cr && ca && cr !== ca && cr.length < 500 && ca.length < 500 && similarity(cr, ca) > 0.5) {
+      return { rawA: r, rawB: a, textA: cr, textB: ca };
     }
   }
   return null;
@@ -243,48 +238,40 @@ function wikiUrl(title) {
 
 // Reverts mode: a sentence that was changed, then changed back.
 async function makeRevertRound() {
-  if (queue.length === 0) await refillQueue();
-  const rc = queue.pop();
-  const [versions, now] = await Promise.all([
-    getText({ revids: rc.old_revid + "|" + rc.revid }),
-    getText({ titles: rc.title })
-  ]);
-  const revs = versions.flat();
-  if (revs.length < 2) return null;
-  const [reverted, restored] = rc.old_revid < rc.revid ? [revs[0], revs[1]] : [revs[1], revs[0]];
-  const pair = findPair(reverted, restored);
-  if (!pair) return null;
-  const current = now.flat()[0] || "";
-  const revertedAlive = current.includes(pair.rawA);
-  const restoredAlive = current.includes(pair.rawB);
-  if (revertedAlive === restoredAlive) return null; // need exactly one survivor
-  const [partsA, partsB] = diffWords(pair.textA, pair.textB);
-  return {
-    title: rc.title,
-    summary: rc.comment ? "The editor who changed it back wrote: " + rc.comment : "The editor left no note.",
-    diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(rc.title.replace(/ /g, "_")) +
-      "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
-    options: [
-      { text: pair.textA, parts: partsA, survived: revertedAlive, note: "this one was undone" },
-      { text: pair.textB, parts: partsB, survived: restoredAlive, note: "this one was put back" }
-    ].sort(() => Math.random() - 0.5)
-  };
+  const title = await pickTitle(0.8);
+  const found = (await findReverts(title)).slice(0, 4);
+  for (const rc of found) {
+    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) });
+    if (!pair) continue;
+    const current = (await getText({ titles: title })).flat()[0] || "";
+    const revertedAlive = current.includes(pair.rawA);
+    const restoredAlive = current.includes(pair.rawB);
+    if (revertedAlive === restoredAlive) continue; // need exactly one survivor
+    const [partsA, partsB] = diffWords(pair.textA, pair.textB);
+    return {
+      title: title,
+      summary: rc.comment ? "The editor who changed it back wrote: " + rc.comment : "The editor left no note.",
+      diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
+        "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
+      options: [
+        { text: pair.textA, parts: partsA, survived: revertedAlive, note: "this one was undone" },
+        { text: pair.textB, parts: partsB, survived: restoredAlive, note: "this one was put back" }
+      ].sort(() => Math.random() - 0.5)
+    };
+  }
+  return null;
 }
 
 // Old vs now mode: a sentence from a random old version against the same spot today.
 async function makeOldRound() {
-  const title = await pickTitle(0.2);
+  const title = await pickTitle(0.7);
   const data = await api({
     action: "query", prop: "revisions", titles: title,
     rvlimit: "1", rvdir: "older", rvstart: randomTime(), rvprop: "ids|timestamp"
   });
   const rev = (data.query.pages[0].revisions || [])[0];
   if (!rev) return null;
-  const [old, now] = await Promise.all([
-    getText({ revids: String(rev.revid) }),
-    getText({ titles: title })
-  ]);
-  const pair = findPair(old.flat()[0] || "", now.flat()[0] || "");
+  const pair = await diffPair({ fromrev: String(rev.revid), torelative: "cur" });
   if (!pair) return null;
   const [partsA, partsB] = diffWords(pair.textA, pair.textB);
   return {
@@ -299,18 +286,35 @@ async function makeOldRound() {
   };
 }
 
-async function buildRound() {
-  let lastError = null;
-  for (let attempts = 0; attempts < 80; attempts++) {
-    try {
-      const round = mode === "old" ? await makeOldRound() : await makeRevertRound();
-      if (round) return round;
-    } catch (e) {
-      console.error(e);
-      lastError = e;
+// Try three articles at the same time and keep the first good result.
+async function buildRound(m) {
+  let lastError = null, done = false;
+  const worker = async () => {
+    for (let n = 0; n < 12 && !done; n++) {
+      try {
+        const round = m === "old" ? await makeOldRound() : await makeRevertRound();
+        if (round) return round;
+      } catch (e) {
+        console.error(e);
+        lastError = e;
+      }
     }
+    throw new Error("no match");
+  };
+  try {
+    return await Promise.any([worker(), worker(), worker()]);
+  } catch (e) {
+    throw new Error("Could not find a good pair (" + (lastError ? lastError.message : "no matches") + ")");
+  } finally {
+    done = true;
   }
-  throw new Error("Could not find a good pair (" + (lastError ? lastError.message : "no matches") + ")");
+}
+
+// Start building the next round while the player is still reading this one.
+function prefetch() {
+  prefetchMode = mode;
+  prefetched = buildRound(mode);
+  prefetched.catch(() => {});
 }
 
 function show(round) {
@@ -355,13 +359,24 @@ function guess(i) {
 }
 
 async function nextRound() {
+  const my = ++ticket;
   $("game").classList.add("hidden");
   $("status").textContent = "Loading a real edit war...";
   $("status").classList.remove("hidden");
   $("retryBtn").classList.add("hidden");
   try {
-    show(await buildRound());
+    const waiting = prefetched, waitingMode = prefetchMode;
+    prefetched = null;
+    let round = null;
+    if (waiting && waitingMode === mode) {
+      try { round = await waiting; } catch (e) { console.error(e); }
+    }
+    if (!round) round = await buildRound(mode);
+    if (my !== ticket) return;
+    show(round);
+    prefetch();
   } catch (e) {
+    if (my !== ticket) return;
     $("status").textContent = "Something went wrong: " + e.message;
     $("retryBtn").classList.remove("hidden");
   }
@@ -371,7 +386,6 @@ $("c0").addEventListener("click", () => guess(0));
 $("c1").addEventListener("click", () => guess(1));
 function setMode(m) {
   mode = m;
-  queue = [];
   $("mRevert").classList.toggle("on", m === "revert");
   $("mOld").classList.toggle("on", m === "old");
   $("sub").textContent = m === "revert"
