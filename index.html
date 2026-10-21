@@ -53,7 +53,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v4</div>
+<div class="ver">v5</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?</p>
@@ -100,23 +100,36 @@ async function api(params) {
   return data;
 }
 
-// Grab recent edits that Wikipedia itself tagged as "reverts".
+// Busy articles that get a lot of reverts.
+const FAMOUS = ["Donald Trump","Taylor Swift","Elon Musk","Pizza","Coffee","Cat","Dog","Bitcoin","Climate change",
+  "World War II","Barack Obama","Michael Jackson","Pok\u00e9mon","Minecraft","The Beatles","Association football",
+  "Chocolate","Google","Apple Inc.","Star Wars","Harry Potter","Marvel Cinematic Universe","Albert Einstein",
+  "Napoleon","Pluto","Moon","Banana","Pasta","Hamburger","Wikipedia","YouTube","Facebook","Pepsi","Coca-Cola"];
+
+// Look through a busy article's history (any year) for edits tagged as reverts.
 async function refillQueue() {
   const tags = ["mw-manual-revert", "mw-undo", "mw-rollback"];
-  let found = [];
-  for (const tag of tags) {
+  const first = Date.UTC(2014, 0, 1);
+  for (let tries = 0; tries < 12; tries++) {
+    const title = FAMOUS[Math.floor(Math.random() * FAMOUS.length)];
+    const start = new Date(first + Math.random() * (Date.now() - first)).toISOString();
     try {
       const data = await api({
-        action: "query", list: "recentchanges", rctag: tag,
-        rcnamespace: "0", rclimit: "50", rcprop: "title|ids|comment"
+        action: "query", prop: "revisions", titles: title,
+        rvlimit: "500", rvdir: "older", rvstart: start, rvprop: "ids|tags|comment"
       });
-      found = found.concat((data.query.recentchanges || []).filter((c) => c.old_revid && c.revid));
+      const revs = (data.query.pages[0].revisions || [])
+        .filter((r) => r.parentid && r.tags && r.tags.some((t) => tags.includes(t)))
+        .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, comment: r.comment || "" }));
+      if (revs.length > 0) {
+        queue = revs.sort(() => Math.random() - 0.5);
+        return;
+      }
     } catch (e) {
-      console.error(tag, e);
+      console.error(title, e);
     }
   }
-  if (found.length === 0) throw new Error("No recent reverts came back from Wikipedia");
-  queue = found.sort(() => Math.random() - 0.5);
+  throw new Error("Could not find any reverts in Wikipedia's history");
 }
 
 async function getText(params) {
@@ -196,7 +209,7 @@ function findPair(oldText, newText) {
 async function buildRound() {
   let attempts = 0;
   while (true) {
-    if (++attempts > 60) throw new Error("Could not find a good edit war after many tries");
+    if (++attempts > 80) throw new Error("Could not find a good edit war after many tries");
     if (queue.length === 0) await refillQueue();
     const rc = queue.pop();
     try {
