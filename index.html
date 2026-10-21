@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wiki Edit War</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --ink: #1b1f24; --muted: #5b6570; --card: #ffffff; --line: #d3d8de;
+    --a: #fdeceb; --a-line: #e5a7a1; --b: #e8f5ec; --b-line: #9fcfae;
+    --good: #1f7a3d; --bad: #b3261e; --accent: #2b5fb4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b; --ink: #e8eaed; --muted: #9aa4ae; --card: #1d2227; --line: #343b43;
+      --a: #3a2123; --a-line: #7a3d40; --b: #1d3326; --b-line: #3f7a55;
+      --good: #6fd18f; --bad: #ff8b83; --accent: #8db4ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.55 Georgia, "Times New Roman", serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 18px 60px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .bar { display: flex; gap: 18px; font-family: system-ui, sans-serif; font-size: 0.9rem; color: var(--muted); margin-bottom: 14px; }
+  .bar b { color: var(--ink); }
+  .article { font-family: system-ui, sans-serif; font-size: 0.95rem; margin-bottom: 10px; }
+  .article a { color: var(--accent); }
+  .choices { display: grid; gap: 12px; }
+  .choice { text-align: left; font: inherit; color: inherit; border: 2px solid var(--line); background: var(--card);
+            border-radius: 6px; padding: 14px 16px; cursor: pointer; width: 100%; }
+  .choice:hover:not(:disabled) { border-color: var(--accent); }
+  .choice:focus-visible, .next:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .choice:disabled { cursor: default; }
+  .choice .tag { font: 0.8rem system-ui, sans-serif; color: var(--muted); display: block; margin-bottom: 4px; }
+  .choice.survived { background: var(--b); border-color: var(--b-line); }
+  .choice.lost { background: var(--a); border-color: var(--a-line); }
+  .choice.picked { box-shadow: 0 0 0 3px var(--accent); }
+  .result { font-family: system-ui, sans-serif; margin-top: 16px; }
+  .result .verdict { font-size: 1.15rem; font-weight: 600; }
+  .result .verdict.good { color: var(--good); }
+  .result .verdict.bad { color: var(--bad); }
+  .result p { margin: 6px 0; color: var(--muted); font-size: 0.92rem; }
+  .next { margin-top: 12px; font: 600 1rem system-ui, sans-serif; background: var(--accent); color: #fff; border: 0;
+          border-radius: 6px; padding: 10px 18px; cursor: pointer; }
+  .status { font-family: system-ui, sans-serif; color: var(--muted); padding: 30px 0; }
+  .hidden { display: none; }
+  footer { margin-top: 36px; font: 0.8rem system-ui, sans-serif; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wiki Edit War</h1>
+  <p class="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?</p>
+
+  <div class="bar">
+    <span>Score <b id="score">0</b> / <b id="played">0</b></span>
+    <span>Streak <b id="streak">0</b></span>
+  </div>
+
+  <div id="status" class="status">Loading a real edit war...</div>
+
+  <section id="game" class="hidden">
+    <div class="article">Article: <a id="articleLink" target="_blank" rel="noopener"></a></div>
+    <div class="choices">
+      <button class="choice" id="c0"><span class="tag">Version 1</span><span class="text"></span></button>
+      <button class="choice" id="c1"><span class="tag">Version 2</span><span class="text"></span></button>
+    </div>
+    <div id="result" class="result hidden">
+      <div id="verdict" class="verdict"></div>
+      <p id="summary"></p>
+      <p><a id="diffLink" target="_blank" rel="noopener">See the real edit on Wikipedia</a></p>
+      <button class="next" id="nextBtn">Next edit war</button>
+    </div>
+  </section>
+
+  <footer>Uses live data from the free Wikipedia API. No sign-up, no AI.</footer>
+</main>
+
+<script>
+const API = "https://en.wikipedia.org/w/api.php";
+let queue = [];
+let score = 0, played = 0, streak = 0;
+let current = null;
+
+const $ = (id) => document.getElementById(id);
+
+async function api(params) {
+  const url = API + "?" + new URLSearchParams({ ...params, format: "json", formatversion: "2", origin: "*" });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Wikipedia request failed");
+  return res.json();
+}
+
+// Grab recent edits that Wikipedia itself tagged as "reverts".
+async function refillQueue() {
+  const data = await api({
+    action: "query", list: "recentchanges", rctag: "mw-manual-revert",
+    rcnamespace: "0", rctype: "edit", rclimit: "50", rcprop: "title|ids|comment"
+  });
+  queue = data.query.recentchanges.sort(() => Math.random() - 0.5);
+}
+
+async function getText(params) {
+  const data = await api({ action: "query", prop: "revisions", rvprop: "content", rvslots: "main", ...params });
+  return data.query.pages.map((p) => (p.revisions ? p.revisions.map((r) => r.slots.main.content) : [""]));
+}
+
+// Turn wiki code into plain readable text.
+function clean(line) {
+  return line
+    .replace(/<ref[^>]*\/>/g, "")
+    .replace(/<ref[^>]*>[\s\S]*?<\/ref>/g, "")
+    .replace(/\{\{[^{}]*\}\}/g, "")
+    .replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, "$1")
+    .replace(/'{2,}/g, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function similarity(a, b) {
+  const wa = new Set(a.toLowerCase().split(/\W+/));
+  const wb = new Set(b.toLowerCase().split(/\W+/));
+  let shared = 0;
+  wa.forEach((w) => { if (wb.has(w)) shared++; });
+  return shared / Math.max(wa.size, wb.size);
+}
+
+// Find one line that differs between the two versions.
+function findPair(oldText, newText) {
+  const oldLines = oldText.split("\n"), newLines = newText.split("\n");
+  const oldSet = new Set(oldLines), newSet = new Set(newLines);
+  const removed = oldLines.filter((l) => l.length > 30 && !newSet.has(l));
+  const added = newLines.filter((l) => l.length > 30 && !oldSet.has(l));
+  for (const r of removed) {
+    for (const a of added) {
+      const cr = clean(r), ca = clean(a);
+      if (cr && ca && cr !== ca && cr.length < 500 && ca.length < 500 && similarity(cr, ca) > 0.5) {
+        return { rawA: r, rawB: a, textA: cr, textB: ca };
+      }
+    }
+  }
+  return null;
+}
+
+async function buildRound() {
+  while (true) {
+    if (queue.length === 0) await refillQueue();
+    const rc = queue.pop();
+    try {
+      const [versions, now] = await Promise.all([
+        getText({ revids: rc.old_revid + "|" + rc.revid }),
+        getText({ titles: rc.title })
+      ]);
+      const revs = versions.flat();
+      if (revs.length < 2) continue;
+      // revids come back oldest first, so: [before revert, after revert]
+      const [reverted, restored] = revs[0] !== undefined && rc.old_revid < rc.revid ? [revs[0], revs[1]] : [revs[1], revs[0]];
+      const pair = findPair(reverted, restored);
+      if (!pair) continue;
+      const current = now.flat()[0] || "";
+      const revertedAlive = current.includes(pair.rawA);
+      const restoredAlive = current.includes(pair.rawB);
+      if (revertedAlive === restoredAlive) continue; // need exactly one survivor
+      return {
+        title: rc.title, comment: rc.comment, revid: rc.revid, oldRevid: rc.old_revid,
+        options: [
+          { text: pair.textA, survived: revertedAlive, label: "reverted" },
+          { text: pair.textB, survived: restoredAlive, label: "restored" }
+        ].sort(() => Math.random() - 0.5)
+      };
+    } catch (e) {
+      console.error(e);
+    }
+  }
+}
+
+function show(round) {
+  current = round;
+  $("articleLink").textContent = round.title;
+  $("articleLink").href = "https://en.wikipedia.org/wiki/" + encodeURIComponent(round.title.replace(/ /g, "_"));
+  round.options.forEach((opt, i) => {
+    const btn = $("c" + i);
+    btn.disabled = false;
+    btn.className = "choice";
+    btn.querySelector(".text").textContent = opt.text;
+    btn.querySelector(".tag").textContent = "Version " + (i + 1);
+  });
+  $("result").classList.add("hidden");
+  $("status").classList.add("hidden");
+  $("game").classList.remove("hidden");
+}
+
+function guess(i) {
+  const opts = current.options;
+  const correct = opts[i].survived;
+  played++;
+  if (correct) { score++; streak++; } else { streak = 0; }
+  opts.forEach((opt, k) => {
+    const btn = $("c" + k);
+    btn.disabled = true;
+    btn.classList.add(opt.survived ? "survived" : "lost");
+    if (k === i) btn.classList.add("picked");
+    btn.querySelector(".tag").textContent =
+      "Version " + (k + 1) + (opt.survived ? " (on the page today)" : " (gone)") +
+      (opt.label === "reverted" ? " - this one was undone" : " - this one was put back");
+  });
+  $("verdict").textContent = correct ? "You got it." : "Not this time.";
+  $("verdict").className = "verdict " + (correct ? "good" : "bad");
+  $("summary").textContent = current.comment ? "The editor who changed it back wrote: " + current.comment : "The editor left no note.";
+  $("diffLink").href = "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(current.title.replace(/ /g, "_")) +
+    "&diff=" + current.revid + "&oldid=" + current.oldRevid;
+  $("score").textContent = score;
+  $("played").textContent = played;
+  $("streak").textContent = streak;
+  $("result").classList.remove("hidden");
+  $("nextBtn").focus();
+}
+
+async function nextRound() {
+  $("game").classList.add("hidden");
+  $("status").textContent = "Loading a real edit war...";
+  $("status").classList.remove("hidden");
+  try {
+    show(await buildRound());
+  } catch (e) {
+    $("status").textContent = "Could not reach Wikipedia. Check your connection and press the button to retry.";
+  }
+}
+
+$("c0").addEventListener("click", () => guess(0));
+$("c1").addEventListener("click", () => guess(1));
+$("nextBtn").addEventListener("click", nextRound);
+nextRound();
+</script>
+</body>
+</html>
