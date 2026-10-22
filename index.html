@@ -19,7 +19,7 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.55 Georgia, "Times New Roman", serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 28px 18px 60px; }
+  main { max-width: 900px; margin: 0 auto; padding: 28px 18px 60px; }
   h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.01em; }
   .sub { color: var(--muted); margin: 0 0 20px; }
   .bar { display: flex; gap: 18px; font-family: system-ui, sans-serif; font-size: 0.9rem; color: var(--muted); margin-bottom: 14px; }
@@ -29,6 +29,11 @@
   .wikititle a:hover { text-decoration: underline; }
   .fromwiki { font: 0.82rem system-ui, sans-serif; color: var(--muted); margin-bottom: 14px; }
   .prompt { font: 600 1.05rem system-ui, sans-serif; margin: 0 0 10px; }
+  .layout { display: flex; gap: 18px; align-items: flex-start; }
+  .layout .choices { flex: 1; min-width: 0; }
+  .pic { width: 220px; flex: none; }
+  .pic img { width: 100%; display: block; padding: 3px; background: var(--card); border: 1px solid var(--line); }
+  @media (max-width: 640px) { .layout { flex-direction: column-reverse; } .pic { width: 100%; max-width: 260px; } }
   .choices { display: grid; gap: 12px; }
   .choice { text-align: left; font: inherit; color: inherit; border: 2px solid var(--line); background: var(--card);
             border-radius: 6px; padding: 14px 16px; cursor: pointer; width: 100%; }
@@ -51,25 +56,16 @@
   .hidden { display: none; }
   .choice mark { color: inherit; border-radius: 3px; padding: 0 1px; }
   .choice mark { background: rgba(240, 180, 40, 0.38); }
-  .modes { display: flex; gap: 8px; margin-bottom: 14px; }
-  .mode { font: 0.9rem system-ui, sans-serif; color: var(--ink); background: var(--card); border: 1px solid var(--line);
-          border-radius: 6px; padding: 6px 14px; cursor: pointer; }
-  .mode.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-  .mode:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .ver { position: fixed; top: 8px; right: 10px; font: 0.75rem system-ui, sans-serif; color: var(--muted); opacity: 0.8; }
+  footer select { font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 4px; }
   footer { margin-top: 36px; font: 0.8rem system-ui, sans-serif; color: var(--muted); }
 </style>
 </head>
 <body>
-<div class="ver">v18</div>
+<div class="ver">v19</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
-
-  <div class="modes">
-    <button class="mode on" id="mEasy">Easy (obvious changes)</button>
-    <button class="mode" id="mHard">Hard (subtle changes)</button>
-  </div>
 
   <div class="bar">
     <span>Score <b id="score">0</b> / <b id="played">0</b></span>
@@ -83,9 +79,12 @@
     <h2 class="wikititle"><a id="articleLink" target="_blank" rel="noopener"></a></h2>
     <div class="fromwiki">From Wikipedia, the free encyclopedia</div>
     <p class="prompt" id="prompt">Which version is the fix?</p>
-    <div class="choices">
-      <button class="choice" id="c0"><span class="tag">Version 1</span><span class="text"></span></button>
-      <button class="choice" id="c1"><span class="tag">Version 2</span><span class="text"></span></button>
+    <div class="layout">
+      <div class="choices">
+        <button class="choice" id="c0"><span class="tag">Version 1</span><span class="text"></span></button>
+        <button class="choice" id="c1"><span class="tag">Version 2</span><span class="text"></span></button>
+      </div>
+      <div class="pic hidden" id="pic"><img id="picImg" alt=""></div>
     </div>
     <div id="result" class="result hidden">
       <div id="verdict" class="verdict"></div>
@@ -95,18 +94,27 @@
     </div>
   </section>
 
-  <footer>Uses live data from the free Wikipedia API. No sign-up, no AI.</footer>
+  <footer>Uses live data from the free Wikipedia API. No sign-up, no AI. Popular articles in:
+    <select id="region">
+      <option value="US">United States</option>
+      <option value="GB">United Kingdom</option>
+      <option value="CA">Canada</option>
+      <option value="AU">Australia</option>
+      <option value="IN">India</option>
+      <option value="">Worldwide</option>
+    </select>
+  </footer>
 </main>
 
 <script>
 const API = "https://en.wikipedia.org/w/api.php";
 let poolPromise = null;
-let prefetched = null, prefetchMode = null, ticket = 0;
-let mode = "easy";
+let prefetched = null, ticket = 0;
+let region = "US";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
-// Share of words that must differ between the two sentences (easy = big change, hard = small change).
-const CHANGE_RANGE = { funny: { easy: [0.3, 1.01], hard: [0.1, 0.3] }, fix: { easy: [0.06, 1.01], hard: [0.02, 0.06] } };
+// Share of words that must differ between the two sentences.
+const MIN_CHANGE = 0.15;
 let score = 0, played = 0, streak = 0;
 let current = null;
 
@@ -127,32 +135,45 @@ async function api(params) {
   }
 }
 
-// Well-known articles: last month's most-viewed pages, asked from Wikipedia (nothing is hardcoded).
-// If that fails, fall back to articles that were reverted recently.
-async function loadPool() {
-  try {
+// Well-known articles: what people in the chosen country (or worldwide) read most, in each of the
+// last 3 months. Titles that show up in 2 or more months are the steady, well-known ones.
+async function topList(country, year, month) {
+  const base = "https://wikimedia.org/api/rest_v1/metrics/pageviews/";
+  const url = country
+    ? base + "top-per-country/" + country + "/all-access/" + year + "/" + month + "/all-days"
+    : base + "top/en.wikipedia/all-access/" + year + "/" + month + "/all-days";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Pageview list answered with status " + res.status);
+  const data = await res.json();
+  return data.items[0].articles
+    .filter((a) => !a.project || a.project === "en.wikipedia")
+    .map((a) => a.article.replace(/_/g, " "));
+}
+
+async function loadPool(country) {
+  const lists = await Promise.all([1, 2, 3].map(async (back) => {
     const d = new Date();
     d.setUTCDate(1);
-    d.setUTCMonth(d.getUTCMonth() - 1);
-    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const res = await fetch("https://wikimedia.org/api/rest_v1/metrics/pageviews/top/en.wikipedia/all-access/" +
-      d.getUTCFullYear() + "/" + mm + "/all-days");
-    if (res.ok) {
-      const data = await res.json();
-      const list = data.items[0].articles.map((a) => a.article.replace(/_/g, " "))
-        .filter((t) => t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t));
-      if (list.length > 0) return list;
+    d.setUTCMonth(d.getUTCMonth() - back);
+    try {
+      return await topList(country, d.getUTCFullYear(), String(d.getUTCMonth() + 1).padStart(2, "0"));
+    } catch (e) {
+      console.error(e);
+      return [];
     }
-  } catch (e) {
-    console.error(e);
-  }
-  const data = await api({ action: "query", list: "recentchanges", rctag: "mw-reverted",
-    rcnamespace: "0", rctype: "edit", rclimit: "500", rcprop: "title" });
-  return [...new Set(data.query.recentchanges.map((c) => c.title))];
+  }));
+  const counts = new Map();
+  lists.forEach((list) => list.forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
+  let titles = [...counts.keys()].filter((t) =>
+    t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t));
+  const steady = titles.filter((t) => counts.get(t) >= 2);
+  if (steady.length >= 80) titles = steady;
+  if (titles.length === 0 && country) return loadPool("");
+  return titles;
 }
 
 async function getPool() {
-  if (!poolPromise) poolPromise = loadPool();
+  if (!poolPromise) poolPromise = loadPool(region);
   return poolPromise.catch(() => []);
 }
 
@@ -172,64 +193,21 @@ function randomTime() {
   return new Date(first + Math.random() * (Date.now() - first)).toISOString();
 }
 
-// The edit note decides what counts (no revert detection needed):
-// "funny" = the note says bad content was cleaned up (vandalism, AI text, nonsense, spam...).
-// "fix" = the note says a typo, grammar or wording problem was fixed (rare, since it is less fun).
-const FIX_NOTE = /\b(typos?|grammar|grammatical|spelling|misspell\w*|copy-?\s?edit\w*|punctuation|proofread\w*|capitali[sz]ation|wording|rephras\w*|reword\w*)\b/i;
-const REVERT_NOTE = /revert|undid|undo/i;
-// Wording taken from Wikipedia's reverting, vandalism and large-language-model pages. Words that also
-// appear in normal edits (AI, spam, NPOV...) only count next to a removal word like "removed" or "revert",
-// so "added a section on AI" does not match.
-const BAD_STRONG = /\b(vandal\w*|rvv|gibberish|nonsense|test edits?|unconstructive|non-?constructive|hoax|trolling|copyvio)\b/i;
-const BAD_AMBIGUOUS = /\b(LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*|spam\w*|promotional|puffery|unsourced|unverifiable|original research|NPOV|BLP|disruptive|WP:(?:NOLLM|LLM|NOR|V|RS))\b/i;
-const BAD_AI = /\b(?:AI|A\.I\.)(?!\w)/;
-const BAD_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|strip\w*|purg\w*|fix\w*|rewrit\w*|cut|trim\w*|restor\w*|per)\b/i;
-function isBadNote(c) {
-  return BAD_STRONG.test(c) || ((BAD_AMBIGUOUS.test(c) || BAD_AI.test(c)) && BAD_ACTION.test(c));
+// The edit note decides what counts: it has to say something silly or bad was cleaned up.
+// Wording comes from Wikipedia's reverting, vandalism and large-language-model pages. Words that also
+// appear in normal edits (AI, fake, joke...) only count next to a removal word like "removed" or "revert".
+const FUNNY_STRONG = /\b(vandal\w*|rvv|gibberish|nonsense|hoax|trolling|test edits?)\b/i;
+const FUNNY_AI_WORDS = /\b(LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*)\b/i;
+const FUNNY_AMBIGUOUS = /\b(jokes?|prank|silly|puerile|juvenile|childish|fake|insult\w*|profanity|obscen\w*)\b/i;
+const FUNNY_AI = /\b(?:AI|A\.I\.)(?!\w)/;
+const NOTE_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|strip\w*|purg\w*|fix\w*|rewrit\w*|cut|trim\w*|restor\w*|per)\b/i;
+function isFunnyNote(c) {
+  if (FUNNY_STRONG.test(c)) return true;
+  return (FUNNY_AI_WORDS.test(c) || FUNNY_AI.test(c) || FUNNY_AMBIGUOUS.test(c)) && NOTE_ACTION.test(c);
 }
-function noteKind(c) {
-  if (isBadNote(c)) return "funny";
-  if (FIX_NOTE.test(c) && !REVERT_NOTE.test(c)) return "fix";
-  return null;
-}
-// Lower number = funnier: vandalism and AI text first, then spam, then sourcing disputes.
+// Lower number = funnier: vandalism and AI text first.
 function funTier(c) {
-  if (/\b(vandal\w*|rvv|nonsense|gibberish|hoax|trolling|test edits?|LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*)\b/i.test(c) || BAD_AI.test(c)) return 0;
-  if (/\b(spam\w*|promotional|puffery|disruptive|unconstructive|non-?constructive)\b/i.test(c)) return 1;
-  return 2;
-}
-
-const queues = { funny: [], fix: [] };
-let refilling = null;
-
-// Edits from Wikipedia's recent-changes feed (last 60 days), sorted funniest and best-known first.
-function refill() {
-  if (refilling) return refilling;
-  refilling = (async () => {
-    const popular = new Set(await getPool());
-    const recent = () => api({
-      action: "query", list: "recentchanges", rcnamespace: "0", rctype: "edit", rclimit: "500", rcdir: "older",
-      rcprop: "ids|title|comment", rcshow: "!bot", rcstart: new Date(Date.now() - Math.random() * 60 * 86400000).toISOString()
-    }).then((d) => d.query.recentchanges).catch(() => []);
-    const lists = await Promise.all([1, 2, 3, 4, 5, 6].map(recent));
-    const seen = new Set();
-    const found = { funny: [], fix: [] };
-    lists.flat().forEach((c) => {
-      if (!c.old_revid || seen.has(c.revid) || SUS.test(c.title)) return;
-      const comment = c.comment || "";
-      const kind = noteKind(comment);
-      if (!kind) return;
-      seen.add(c.revid);
-      found[kind].push({ title: c.title, revid: c.revid, old_revid: c.old_revid, comment: comment });
-    });
-    for (const kind of ["funny", "fix"]) {
-      found[kind].sort((a, b) =>
-        (kind === "funny" ? funTier(a.comment) - funTier(b.comment) : 0) ||
-        (popular.has(b.title) - popular.has(a.title)) || Math.random() - 0.5);
-      queues[kind].push(...found[kind]);
-    }
-  })().finally(() => { refilling = null; });
-  return refilling;
+  return FUNNY_STRONG.test(c) || FUNNY_AI_WORDS.test(c) || FUNNY_AI.test(c) ? 0 : 1;
 }
 
 // Turn wiki code into plain readable text.
@@ -316,7 +294,7 @@ function splitSentences(text) {
 }
 
 // Ask Wikipedia for just the changed lines (small), then find one sentence that was reworded.
-async function diffPair(params, range) {
+async function diffPair(params, minChange) {
   const data = await api({ action: "compare", prop: "diff|timestamp", ...params });
   const html = (data.compare && data.compare.body) || "";
   const doc = new DOMParser().parseFromString("<table>" + html + "</table>", "text/html");
@@ -344,7 +322,7 @@ async function diffPair(params, range) {
       if (!best) continue;
       const [partsA, partsB] = diffWords(sa, best);
       const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
-      if (changed >= range[0] && changed < range[1]) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
+      if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
     }
     if (pairs.length > 0) {
       const pick = pairs[Math.floor(Math.random() * pairs.length)];
@@ -379,41 +357,44 @@ function wikiUrl(title) {
   return "https://en.wikipedia.org/wiki/" + encodeURIComponent(title.replace(/ /g, "_"));
 }
 
-// Older edits: scan one article's history from a random moment and keep edits whose note fits.
-async function findOldEdits(title, kind) {
+// Scan one well-known article's history from a random moment for edits with a funny note.
+async function findFunnyEdits(title) {
   const data = await api({
     action: "query", prop: "revisions", titles: title,
     rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|comment"
   });
-  const found = (data.query.pages[0].revisions || [])
-    .filter((r) => r.parentid && noteKind(r.comment || "") === kind)
-    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, comment: r.comment || "" }))
-    .sort(() => Math.random() - 0.5);
-  if (kind === "funny") found.sort((a, b) => funTier(a.comment) - funTier(b.comment));
-  return found.slice(0, 5);
+  return (data.query.pages[0].revisions || [])
+    .filter((r) => r.parentid && isFunnyNote(cleanComment(r.comment || "")))
+    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment) }))
+    .sort(() => Math.random() - 0.5)
+    .sort((a, b) => funTier(a.note) - funTier(b.note))
+    .slice(0, 5);
 }
 
-// One round: the older sentence is the mistake and the newer one is the fix. Mostly the funny kind.
-async function makeRound(m) {
-  const kind = Math.random() < 0.85 ? "funny" : "fix";
-  let candidates;
-  if (Math.random() < 0.3) {
-    const title = await pickTitle(0.9);
-    candidates = SUS.test(title) ? [] : await findOldEdits(title, kind);
-  } else {
-    if (queues[kind].length === 0) await refill();
-    candidates = [queues[kind].shift()];
+// The article's main picture, if it has one.
+async function getImage(title) {
+  try {
+    const data = await api({ action: "query", prop: "pageimages", piprop: "thumbnail", pithumbsize: "320", titles: title });
+    const page = data.query.pages[0];
+    return (page.thumbnail && page.thumbnail.source) || "";
+  } catch (e) {
+    return "";
   }
-  for (const rc of candidates) {
-    if (!rc) continue;
-    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, CHANGE_RANGE[kind][m]);
+}
+
+// One round: the older sentence is the mistake and the newer one is the fix.
+async function makeRound() {
+  const title = await pickTitle(0.95);
+  if (SUS.test(title)) return null;
+  for (const rc of await findFunnyEdits(title)) {
+    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE);
     if (!pair) continue;
-    const note = cleanComment(rc.comment || "");
     return {
-      title: rc.title,
-      summary: note ? "Note from the editor who made the change: " : "The editor left no note.",
-      note: note,
-      diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(rc.title.replace(/ /g, "_")) +
+      title: title,
+      image: await getImage(title),
+      summary: "Note from the editor who made the change: ",
+      note: rc.note,
+      diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
         "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
       options: [
         { text: pair.textA, parts: pair.partsA, answer: false, when: niceTime(pair.timeA) },
@@ -425,12 +406,12 @@ async function makeRound(m) {
 }
 
 // Try two articles at the same time and keep the first good result.
-async function buildRound(m) {
+async function buildRound() {
   let lastError = null, done = false;
   const worker = async () => {
     for (let n = 0; n < 25 && !done; n++) {
       try {
-        const round = await makeRound(m);
+        const round = await makeRound();
         if (round) return round;
       } catch (e) {
         console.error(e);
@@ -450,8 +431,7 @@ async function buildRound(m) {
 
 // Start building the next round while the player is still reading this one.
 function prefetch() {
-  prefetchMode = mode;
-  prefetched = buildRound(mode);
+  prefetched = buildRound();
   prefetched.catch(() => {});
 }
 
@@ -459,6 +439,9 @@ function show(round) {
   current = round;
   $("articleLink").textContent = round.title;
   $("articleLink").href = wikiUrl(round.title);
+  $("pic").classList.toggle("hidden", !round.image);
+  $("picImg").src = round.image || "";
+  $("picImg").alt = round.title;
   round.options.forEach((opt, i) => {
     const btn = $("c" + i);
     btn.disabled = false;
@@ -509,13 +492,13 @@ async function nextRound() {
   $("status").classList.remove("hidden");
   $("retryBtn").classList.add("hidden");
   try {
-    const waiting = prefetched, waitingMode = prefetchMode;
+    const waiting = prefetched;
     prefetched = null;
     let round = null;
-    if (waiting && waitingMode === mode) {
+    if (waiting) {
       try { round = await waiting; } catch (e) { console.error(e); }
     }
-    if (!round) round = await buildRound(mode);
+    if (!round) round = await buildRound();
     if (my !== ticket) return;
     show(round);
     prefetch();
@@ -528,15 +511,19 @@ async function nextRound() {
 
 $("c0").addEventListener("click", () => guess(0));
 $("c1").addEventListener("click", () => guess(1));
-function setMode(m) {
-  mode = m;
-  $("mEasy").classList.toggle("on", m === "easy");
-  $("mHard").classList.toggle("on", m === "hard");
+try {
+  const saved = localStorage.getItem("wikiRegion");
+  if (saved !== null) region = saved;
+} catch (e) {}
+$("region").value = region;
+$("region").addEventListener("change", () => {
+  region = $("region").value;
+  try { localStorage.setItem("wikiRegion", region); } catch (e) {}
+  poolPromise = null;
+  prefetched = null;
   nextRound();
-}
+});
 
-$("mEasy").addEventListener("click", () => setMode("easy"));
-$("mHard").addEventListener("click", () => setMode("hard"));
 $("nextBtn").addEventListener("click", nextRound);
 $("retryBtn").addEventListener("click", nextRound);
 nextRound();
