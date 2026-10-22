@@ -145,6 +145,15 @@ function save(key, value) {
 }
 const seen = new Set(load("wikiSeen", []));
 function saveSeen() { save("wikiSeen", [...seen].slice(-4000)); }
+// Pick up edits another tab of this browser has already shown.
+function syncSeen() { load("wikiSeen", []).forEach((k) => seen.add(k)); }
+// A short fingerprint of the two sentences, so the same joke added by different edits counts as a repeat.
+function textKey(a, b) {
+  const t = (a + "|" + b).toLowerCase().replace(/\W+/g, "");
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+  return "t:" + h;
+}
 
 // The daily challenge: same five questions for everyone on the same UTC date.
 const todayKey = new Date().toISOString().slice(0, 10);
@@ -464,12 +473,16 @@ async function makeRound(rand, isDaily, avoid) {
     title = await pickTitle(0.95, rand);
   }
   if (SUS.test(title) || (avoid && avoid.includes(title))) return null;
+  if (!isDaily) syncSeen();
   for (const rc of await findFunnyEdits(title, rand)) {
     if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
     const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
     if (!pair) continue;
+    const key = textKey(pair.textA, pair.textB);
+    if (!isDaily && seen.has(key)) continue;
     return {
       revid: rc.revid,
+      key: key,
       title: title,
       image: await getImage(title),
       summary: "Note from the editor who made the change: ",
@@ -587,6 +600,7 @@ function renderBar() {
 function show(round) {
   current = round;
   seen.add(round.revid);
+  seen.add(round.key);
   saveSeen();
   if (mode === "daily") {
     daily.titles[daily.results.length] = round.title;
