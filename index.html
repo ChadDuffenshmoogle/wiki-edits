@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v28</div>
+<div class="ver">v29</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -291,9 +291,9 @@ function shuffle(list, rand) {
 // The edit note decides what counts: it has to say something silly or bad was cleaned up.
 // Wording comes from Wikipedia's reverting, vandalism and large-language-model pages. Words that also
 // appear in normal edits (AI, fake, joke...) only count next to a removal word like "removed" or "revert".
-const FUNNY_STRONG = /\b(vandal\w*|rvv|gibberish|nonsens\w*|hoax\w*|troll\w*|lol|lmao|ha(?:ha)+|hehe+|memes?|rickroll\w*|keyboard smash|random (?:letters|characters|text|words|garbage)|bogus)\b/i;
+const FUNNY_STRONG = /\b(vandal\w*|rvv|gibberish|nonsens\w*|hoax\w*|troll\w*|memes?|rickroll\w*|keyboard smash|random (?:letters|characters|text|words|garbage)|bogus)\b/i;
 const FUNNY_AI_WORDS = /\b(LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*)\b/i;
-const FUNNY_AMBIGUOUS = /\b(jokes?|joking|prank\w*|silly|silliness|puerile|juvenile|childish|fake|insult\w*|bizarre|absurd\w*|ridiculous)\b/i;
+const FUNNY_AMBIGUOUS = /\b(jokes?|joking|prank\w*|silly|silliness|puerile|juvenile|childish|fake|insult\w*|bizarre|absurd\w*|ridiculous|lol|lmao|ha(?:ha)+|hehe+)\b/i;
 const FUNNY_AI = /\b(?:AI|A\.I\.)(?!\w)/;
 const NOTE_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|strip\w*|purg\w*|fix\w*|rewrit\w*|cut|trim\w*|restor\w*|per)\b/i;
 function isFunnyNote(c) {
