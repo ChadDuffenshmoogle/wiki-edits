@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v23</div>
+<div class="ver">v24</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -125,7 +125,9 @@ let region = "US";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
 // Skip profanity, slurs and crude insults in article titles and sentences.
-const BAD_TEXT = /\b(fuck\w*|shit\w*|bullshit|bitch\w*|cunt\w*|dick\w*|cock\w*|pussy|asshole\w*|arse\w*|bastard\w*|piss\w*|crap\w*|damn\w*|bollocks|wank\w*|twat|slut\w*|whore\w*|bimbo\w*|topless|retard\w*|spastic|moron\w*|idiot\w*|stupid|nigg\w*|negro\w*|coon|chink\w*|gook|spic|wetback|kike|fag|fags|faggot\w*|dyke|tranny|shemale|paki|raghead|towelhead|honky|poop\w*|fart\w*|boob\w*|tits?|butt)\b/i;
+const BAD_TEXT = /\b(fuck\w*|shit\w*|bullshit|bitch\w*|cunt\w*|dick\w*|cock\w*|pussy|asshole\w*|arse\w*|bastard\w*|piss\w*|crap\w*|damn\w*|bollocks|wank\w*|twat|slut\w*|whore\w*|bimbo\w*|topless|retard\w*|spastic|moron\w*|idiot\w*|stupid|nigg\w*|negro\w*|coon|chink\w*|gook|spic|wetback|kike|fag|fags|faggot\w*|dyke|tranny|shemale|paki|raghead|towelhead|honky|poop\w*|fart\w*|boob\w*|tits?|butt|gay|gays|lesbian\w*|homosexual\w*|nationalist\w*|supremac\w*|nazi\w*|fascis\w*|racis\w*|sexis\w*|assassinat\w*|murder\w*|kill\w*|shot|shoot\w*|massacre\w*|genocide\w*|holocaust|terror\w*|bomb\w*|suicid\w*|died|dies|death|deaths|dead|fatal\w*|victims?|funeral\w*|tragedy|tragic|disaster|crash\w*|war crimes?|execut\w*|stabb\w*|lynch\w*|abus\w*|kidnap\w*|hostages?|manslaughter|overdos\w*|casualt\w*)\b/i;
+// Gender-swap vandalism: skip when a pronoun or gendered word is among the changed words.
+const GENDER = /^(he|she|his|her|hers|him|himself|herself|man|woman|men|women|male|female|boy|girl|mr|mrs|ms)$/i;
 // Skip edits whose note is about hate or bigotry (racism, sexism and the other -isms).
 const BAD_NOTE = /\b(racis\w*|racial\w*|sexis\w*|ableis\w*|ageis\w*|homophob\w*|transphob\w*|biphob\w*|islamophob\w*|antisemit\w*|anti-semit\w*|xenophob\w*|misogyn\w*|misandr\w*|bigot\w*|supremac\w*|nazi\w*|hitler|slurs?|hate|hateful|hate speech|offensive|derogatory|pejorative|discriminat\w*|n-word|f-word|epithets?|abusive|harass\w*|profan\w*|obscen\w*|swear\w*|vulgar\w*|explicit|lewd|crude)\b/i;
 
@@ -286,9 +288,9 @@ function shuffle(list, rand) {
 // The edit note decides what counts: it has to say something silly or bad was cleaned up.
 // Wording comes from Wikipedia's reverting, vandalism and large-language-model pages. Words that also
 // appear in normal edits (AI, fake, joke...) only count next to a removal word like "removed" or "revert".
-const FUNNY_STRONG = /\b(vandal\w*|rvv|gibberish|nonsense|hoax|trolling|test edits?)\b/i;
+const FUNNY_STRONG = /\b(vandal\w*|rvv|gibberish|nonsens\w*|hoax\w*|troll\w*|test edits?|lol|lmao|ha(?:ha)+|hehe+|memes?|rickroll\w*|keyboard smash|random (?:letters|characters|text|words|garbage)|page blanking|bogus)\b/i;
 const FUNNY_AI_WORDS = /\b(LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*)\b/i;
-const FUNNY_AMBIGUOUS = /\b(jokes?|prank|silly|puerile|juvenile|childish|fake|insult\w*|profanity|obscen\w*)\b/i;
+const FUNNY_AMBIGUOUS = /\b(jokes?|joking|prank\w*|silly|silliness|puerile|juvenile|childish|fake|insult\w*|bizarre|absurd\w*|ridiculous|random|irrelevant|unsourced|unencyclop\w*|promotional|self-promotion|misleading|false|incorrect|inaccurate|made[- ]up|exaggerat\w*|trivia|fancruft|puffery|peacock|whoops|oops|typos?|grammar|wrong|weird)\b/i;
 const FUNNY_AI = /\b(?:AI|A\.I\.)(?!\w)/;
 const NOTE_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|strip\w*|purg\w*|fix\w*|rewrit\w*|cut|trim\w*|restor\w*|per)\b/i;
 function isFunnyNote(c) {
@@ -486,6 +488,7 @@ async function makeRound(rand, isDaily, avoid) {
     if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
     const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
     if (!pair) continue;
+    if ([...pair.partsA, ...pair.partsB].some((w) => w.d && GENDER.test(w.t.replace(/\W/g, "")))) continue;
     const key = textKey(pair.textA, pair.textB);
     if (!isDaily && seen.has(key)) continue;
     return {
