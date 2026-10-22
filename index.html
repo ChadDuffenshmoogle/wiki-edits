@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v25</div>
+<div class="ver">v26</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -472,6 +472,29 @@ async function getImage(title) {
   }
 }
 
+// Skip whole articles about crime, violence or tragedy, judged by the article's categories and opening text.
+const TRAGIC_CATEGORY = /\b(murder\w*|killers?|killings?|serial|crimes?|criminals?|convict\w*|prisoners?|executed|massacres?|assassinat\w*|terror\w*|shootings?|attacks?|bombings?|disasters?|accidents?|genocide\w*|holocaust|war crimes?|victims?|abuse\w*|rapists?|kidnap\w*|abduct\w*|hostages?|suicides?|famines?|riots?|lynch\w*|cults?|extremis\w*|violen\w*|necrophil\w*|pedophil\w*|paedophil\w*)\b/i;
+const TRAGIC_INTRO = /\b(murder\w*|killer|killed|killing|assassinat\w*|massacre\w*|genocide\w*|terror\w*|shooting|rapist|rape\w*|convicted|executed|bombing|atrocit\w*|abuse\w*|kidnap\w*|suicide|tragedy|tragic|disaster|victims?|hostages?)\b/i;
+const safeCache = new Map();
+async function isSafeArticle(title) {
+  if (safeCache.has(title)) return safeCache.get(title);
+  let safe = true;
+  try {
+    const data = await api({
+      action: "query", prop: "categories|extracts", titles: title,
+      cllimit: "500", clshow: "!hidden", exintro: "1", explaintext: "1", exchars: "1200"
+    });
+    const page = data.query.pages[0];
+    const cats = (page.categories || []).map((c) => c.title.replace(/^Category:/, "")).join(" | ");
+    const intro = page.extract || "";
+    if (TRAGIC_CATEGORY.test(cats) || SUS.test(cats) || TRAGIC_INTRO.test(intro) || BAD_TEXT.test(intro.slice(0, 300))) safe = false;
+  } catch (e) {
+    console.error(e);
+  }
+  safeCache.set(title, safe);
+  return safe;
+}
+
 // One round: the older sentence is the mistake and the newer one is the fix.
 // Endless rounds skip edits this browser has already shown. Daily rounds only use the seeded random numbers.
 async function makeRound(rand, isDaily, avoid) {
@@ -484,7 +507,9 @@ async function makeRound(rand, isDaily, avoid) {
   }
   if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title))) return null;
   if (!isDaily) syncSeen();
-  for (const rc of await findFunnyEdits(title, rand)) {
+  const edits = await findFunnyEdits(title, rand);
+  if (edits.length === 0 || !(await isSafeArticle(title))) return null;
+  for (const rc of edits) {
     if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
     const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
     if (!pair) continue;
