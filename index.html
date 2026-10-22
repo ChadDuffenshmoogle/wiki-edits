@@ -58,7 +58,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v10</div>
+<div class="ver">v11</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?</p>
@@ -98,6 +98,10 @@ const API = "https://en.wikipedia.org/w/api.php";
 let poolPromise = null;
 let prefetched = null, prefetchMode = null, ticket = 0;
 let mode = "revert";
+// Skip adult or explicit topics (checked on article titles and sentences).
+const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
+// Share of words that must differ between the two sentences.
+const MIN_CHANGE = { revert: 0.15, old: 0.3 };
 let score = 0, played = 0, streak = 0;
 let current = null;
 
@@ -131,7 +135,7 @@ async function loadPool() {
     if (res.ok) {
       const data = await res.json();
       const list = data.items[0].articles.map((a) => a.article.replace(/_/g, " "))
-        .filter((t) => t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t));
+        .filter((t) => t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t));
       if (list.length > 0) return list;
     }
   } catch (e) {
@@ -148,8 +152,9 @@ async function pickTitle(popularChance) {
     const pool = await poolPromise.catch(() => []);
     if (pool.length > 0) return pool[Math.floor(Math.random() * pool.length)];
   }
-  const data = await api({ action: "query", list: "random", rnnamespace: "0", rnlimit: "1" });
-  return data.query.random[0].title;
+  const data = await api({ action: "query", list: "random", rnnamespace: "0", rnlimit: "10" });
+  const safe = data.query.random.map((r) => r.title).filter((t) => !SUS.test(t));
+  return safe[0] || data.query.random[0].title;
 }
 
 // A random moment since Wikipedia started (January 2001).
@@ -241,11 +246,10 @@ function renderParts(el, parts) {
   });
 }
 
-// Keep only ordinary sentences: no tables, lists, captions, file names, references or code.
-function isPlain(raw, text) {
-  if (/^[|{}!*#:;=<-]/.test(raw)) return false;
-  if (/\[\[(File|Image|Category|Media):/i.test(raw)) return false;
+// Keep only ordinary sentences: no adult topics, captions, file names, references or code.
+function isPlain(text) {
   if (text.length < 50 || text.length >= 500) return false;
+  if (SUS.test(text)) return false;
   if (/[|{}<>\[\]=]|http|www\.|&[a-z#0-9]+;/i.test(text)) return false;
   if (/\.(jpe?g|png|gif|svg|webp|pdf|ogg|mp3|tiff?)\b/i.test(text)) return false;
   if (!/^["“'(]?[A-Z0-9]/.test(text)) return false;
@@ -254,24 +258,56 @@ function isPlain(raw, text) {
   return letters / text.length >= 0.7;
 }
 
-// Ask Wikipedia for just the changed lines (small), instead of downloading two whole articles.
-async function diffPair(params) {
+// Cut a paragraph into single sentences (without splitting on "Dr." or "U.S.").
+const ABBREVIATIONS = /^(?:[A-Z]|Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|No|Inc|Ltd|Co|Mt|Gen|Col|Sen|Rep|Gov|Prof|Rev|Lt|Capt|Sgt|Jan|Feb|Mar|Apr|Aug|Sept|Oct|Nov|Dec|U\.S|U\.K|e\.g|i\.e|c|ca)\.$/;
+function splitSentences(text) {
+  const out = [];
+  const re = /[.!?]["”’')\]]*\s+(?=["“‘(]?[A-Z0-9])/g;
+  let start = 0, m;
+  while ((m = re.exec(text))) {
+    const piece = text.slice(start, m.index + m[0].trimEnd().length);
+    if (ABBREVIATIONS.test(piece.split(" ").pop())) continue;
+    out.push(piece.trim());
+    start = m.index + m[0].length;
+  }
+  out.push(text.slice(start).trim());
+  return out.filter(Boolean);
+}
+
+// Ask Wikipedia for just the changed lines (small), then find one sentence that was reworded.
+async function diffPair(params, minChange) {
   const data = await api({ action: "compare", prop: "diff|timestamp", ...params });
   const html = (data.compare && data.compare.body) || "";
   const doc = new DOMParser().parseFromString("<table>" + html + "</table>", "text/html");
   const rows = [];
   doc.querySelectorAll("tr").forEach((tr) => {
     const d = tr.querySelector("td.diff-deletedline"), a = tr.querySelector("td.diff-addedline");
-    if (d && a) rows.push([d.textContent.trim(), a.textContent.trim()]);
+    if (!d || !a) return;
+    const r = d.textContent.trim(), b = a.textContent.trim();
+    if (/^[|{}!*#:;=<-]/.test(r) || /^[|{}!*#:;=<-]/.test(b)) return;
+    if (/\[\[(File|Image|Category|Media):/i.test(r + b)) return;
+    rows.push([r, b]);
   });
   rows.sort(() => Math.random() - 0.5);
-  for (const [r, a] of rows) {
-    const cr = clean(r), ca = clean(a);
-    if (cr === ca || !isPlain(r, cr) || !isPlain(a, ca) || similarity(cr, ca) <= 0.35) continue;
-    const [pa, pb] = diffWords(cr, ca);
-    const changed = (pa.filter((w) => w.d).length + pb.filter((w) => w.d).length) / (pa.length + pb.length);
-    if (changed >= 0.3) {
-      return { rawA: r, rawB: a, textA: cr, textB: ca, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
+  for (const [r, b] of rows) {
+    const sentsA = splitSentences(clean(r)), sentsB = splitSentences(clean(b));
+    const pairs = [];
+    for (const sa of sentsA) {
+      if (sentsB.includes(sa) || !isPlain(sa)) continue;
+      let best = null, bestSim = 0.35;
+      for (const sb of sentsB) {
+        if (sentsA.includes(sb) || !isPlain(sb)) continue;
+        const sim = similarity(sa, sb);
+        if (sim > bestSim) { best = sb; bestSim = sim; }
+      }
+      if (!best) continue;
+      const [partsA, partsB] = diffWords(sa, best);
+      const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
+      if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
+    }
+    if (pairs.length > 0) {
+      const pick = pairs[Math.floor(Math.random() * pairs.length)];
+      return { ...pick, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
     }
   }
   return null;
@@ -303,16 +339,17 @@ function wikiUrl(title) {
 // Reverts mode: a sentence that was changed, then changed back.
 async function makeRevertRound() {
   const title = await pickTitle(0.9);
-  const found = (await findReverts(title)).slice(0, 4);
+  if (SUS.test(title)) return null;
+  const found = (await findReverts(title)).slice(0, 8);
   let current = null;
   for (const rc of found) {
-    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) });
+    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE.revert);
     if (!pair) continue;
-    if (current === null) current = (await getText({ titles: title })).flat()[0] || "";
-    const revertedAlive = current.includes(pair.rawA);
-    const restoredAlive = current.includes(pair.rawB);
+    if (current === null) current = ((await getText({ titles: title })).flat()[0] || "").split("\n").map(clean).join("\n");
+    const revertedAlive = current.includes(pair.textA);
+    const restoredAlive = current.includes(pair.textB);
     if (revertedAlive === restoredAlive) continue; // need exactly one survivor
-    const [partsA, partsB] = diffWords(pair.textA, pair.textB);
+    const partsA = pair.partsA, partsB = pair.partsB;
     return {
       title: title,
       summary: cleanComment(rc.comment) ? "Note from the editor who changed it back: " : "The editor left no note.",
@@ -331,15 +368,16 @@ async function makeRevertRound() {
 // Old vs now mode: a sentence from a random old version against the same spot today.
 async function makeOldRound() {
   const title = await pickTitle(0.9);
+  if (SUS.test(title)) return null;
   const data = await api({
     action: "query", prop: "revisions", titles: title,
     rvlimit: "1", rvdir: "older", rvstart: randomTime(), rvprop: "ids|timestamp"
   });
   const rev = (data.query.pages[0].revisions || [])[0];
   if (!rev) return null;
-  const pair = await diffPair({ fromrev: String(rev.revid), torelative: "cur" });
+  const pair = await diffPair({ fromrev: String(rev.revid), torelative: "cur" }, MIN_CHANGE.old);
   if (!pair) return null;
-  const [partsA, partsB] = diffWords(pair.textA, pair.textB);
+  const partsA = pair.partsA, partsB = pair.partsB;
   return {
     title: title,
     summary: "",
