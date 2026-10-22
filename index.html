@@ -58,14 +58,14 @@
 </style>
 </head>
 <body>
-<div class="ver">v11</div>
+<div class="ver">v13</div>
 <main>
   <h1>Wiki Edit War</h1>
-  <p class="sub" id="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?</p>
+  <p class="sub" id="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is the one that was put back?</p>
 
   <div class="modes">
     <button class="mode on" id="mRevert">Reverts</button>
-    <button class="mode" id="mOld">Old vs now</button>
+    <button class="mode" id="mOld">Old edits</button>
   </div>
 
   <div class="bar">
@@ -101,7 +101,7 @@ let mode = "revert";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
 // Share of words that must differ between the two sentences.
-const MIN_CHANGE = { revert: 0.15, old: 0.3 };
+const MIN_CHANGE = { revert: 0.15, old: 0.15 };
 let score = 0, played = 0, streak = 0;
 let current = null;
 
@@ -146,10 +146,14 @@ async function loadPool() {
   return [...new Set(data.query.recentchanges.map((c) => c.title))];
 }
 
+async function getPool() {
+  if (!poolPromise) poolPromise = loadPool();
+  return poolPromise.catch(() => []);
+}
+
 async function pickTitle(popularChance) {
   if (Math.random() < popularChance) {
-    if (!poolPromise) poolPromise = loadPool();
-    const pool = await poolPromise.catch(() => []);
+    const pool = await getPool();
     if (pool.length > 0) return pool[Math.floor(Math.random() * pool.length)];
   }
   const data = await api({ action: "query", list: "random", rnnamespace: "0", rnlimit: "10" });
@@ -163,32 +167,27 @@ function randomTime() {
   return new Date(first + Math.random() * (Date.now() - first)).toISOString();
 }
 
-// Look through an article's history for reverts: edits tagged as reverts, or edits that
-// restored an exact earlier copy of the page (this catches the pre-tag days too).
-async function findReverts(title) {
-  const tags = ["mw-manual-revert", "mw-undo", "mw-rollback"];
-  const data = await api({
-    action: "query", prop: "revisions", titles: title,
-    rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|tags|comment|sha1"
-  });
-  const revs = data.query.pages[0].revisions || [];
-  const seen = new Map();
-  const found = [];
-  revs.forEach((r, i) => {
-    const tagged = r.tags && r.tags.some((t) => tags.includes(t));
-    const earlier = r.sha1 ? seen.get(r.sha1) : undefined;
-    const identity = earlier !== undefined && earlier < i - 1;
-    if (r.parentid && (tagged || identity)) {
-      found.push({ title: title, revid: r.revid, old_revid: r.parentid, comment: r.comment || "" });
-    }
-    if (r.sha1) seen.set(r.sha1, i);
-  });
-  return found.sort(() => Math.random() - 0.5);
-}
-
-async function getText(params) {
-  const data = await api({ action: "query", prop: "revisions", rvprop: "content", rvslots: "main", ...params });
-  return data.query.pages.map((p) => (p.revisions ? p.revisions.map((r) => r.slots.main.content) : [""]));
+// Recent reverts straight from Wikipedia's recent-changes feed, well-known articles first.
+let revertQueue = [], refilling = null;
+function refillReverts() {
+  if (refilling) return refilling;
+  refilling = (async () => {
+    const popular = new Set(await getPool());
+    const start = new Date(Date.now() - Math.random() * 60 * 86400000).toISOString();
+    const tags = ["mw-manual-revert", "mw-undo", "mw-rollback"];
+    const lists = await Promise.all(tags.map((t) =>
+      api({ action: "query", list: "recentchanges", rctag: t, rcnamespace: "0", rctype: "edit",
+        rclimit: "500", rcstart: start, rcdir: "older", rcprop: "ids|title|comment" })
+        .then((d) => d.query.recentchanges).catch(() => [])));
+    const seen = new Set();
+    const all = [];
+    lists.flat().forEach((c) => {
+      if (c.old_revid && !seen.has(c.revid) && !SUS.test(c.title)) { seen.add(c.revid); all.push(c); }
+    });
+    all.sort(() => Math.random() - 0.5);
+    revertQueue.push(...all.filter((c) => popular.has(c.title)), ...all.filter((c) => !popular.has(c.title)));
+  })().finally(() => { refilling = null; });
+  return refilling;
 }
 
 // Turn wiki code into plain readable text.
@@ -326,7 +325,9 @@ function cleanComment(c) {
     .replace(/\s*\(\[\[WP:[^\]]*\]\]\)/g, "")
     .replace(/\/\*.*?\*\//g, "")
     .replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, "$1")
-    .replace(/^Reverted (\d+ )?(good faith )?edits? by [^:]*(:|$)\s*/i, "")
+    .replace(/^(?:Reverted|Reverting|Undid|Undoing)\b[^:]*?\bby\b[^:]*(?::|$)\s*/i, "")
+    .replace(/\s*\((?:RW|TW|AWB|HG|STiki|Huggle)[^)]*\)/gi, "")
+    .replace(/\s*\(talk\)/gi, "")
     .replace(/'{2,}/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -336,65 +337,62 @@ function wikiUrl(title) {
   return "https://en.wikipedia.org/wiki/" + encodeURIComponent(title.replace(/ /g, "_"));
 }
 
-// Reverts mode: a sentence that was changed, then changed back.
+// Reverts mode: a sentence that was changed, then changed back. The answer is the put-back version.
 async function makeRevertRound() {
+  if (revertQueue.length === 0) await refillReverts();
+  const rc = revertQueue.shift();
+  if (!rc) return null;
+  const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE.revert);
+  if (!pair) return null;
+  const note = cleanComment(rc.comment || "");
+  return {
+    title: rc.title,
+    summary: note ? "Note from the editor who changed it back: " : "The editor left no note.",
+    note: note,
+    diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(rc.title.replace(/ /g, "_")) +
+      "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
+    options: [
+      { text: pair.textA, parts: pair.partsA, survived: false, note: "this one was undone", when: niceTime(pair.timeA) },
+      { text: pair.textB, parts: pair.partsB, survived: true, note: "this one was put back", when: niceTime(pair.timeB) }
+    ].sort(() => Math.random() - 0.5)
+  };
+}
+
+// Old edits mode: a sentence before and after one random old edit. The answer is the "after" version.
+async function makeOldRound() {
   const title = await pickTitle(0.9);
   if (SUS.test(title)) return null;
-  const found = (await findReverts(title)).slice(0, 8);
-  let current = null;
-  for (const rc of found) {
-    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE.revert);
+  const data = await api({
+    action: "query", prop: "revisions", titles: title,
+    rvlimit: "30", rvdir: "older", rvstart: randomTime(), rvprop: "ids|timestamp|comment"
+  });
+  const revs = (data.query.pages[0].revisions || [])
+    .filter((r) => r.parentid && cleanComment(r.comment || ""))
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 5);
+  for (const rev of revs) {
+    const pair = await diffPair({ fromrev: String(rev.parentid), torev: String(rev.revid) }, MIN_CHANGE.old);
     if (!pair) continue;
-    if (current === null) current = ((await getText({ titles: title })).flat()[0] || "").split("\n").map(clean).join("\n");
-    const revertedAlive = current.includes(pair.textA);
-    const restoredAlive = current.includes(pair.textB);
-    if (revertedAlive === restoredAlive) continue; // need exactly one survivor
-    const partsA = pair.partsA, partsB = pair.partsB;
     return {
       title: title,
-      summary: cleanComment(rc.comment) ? "Note from the editor who changed it back: " : "The editor left no note.",
-      note: cleanComment(rc.comment),
+      summary: "Note from the editor who made the change: ",
+      note: cleanComment(rev.comment),
       diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
-        "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
+        "&diff=" + rev.revid + "&oldid=" + rev.parentid,
       options: [
-        { text: pair.textA, parts: partsA, survived: revertedAlive, note: "this one was undone", when: niceTime(pair.timeA) },
-        { text: pair.textB, parts: partsB, survived: restoredAlive, note: "this one was put back", when: niceTime(pair.timeB) }
+        { text: pair.textA, parts: pair.partsA, survived: false, note: "before the edit", when: niceTime(pair.timeA) },
+        { text: pair.textB, parts: pair.partsB, survived: true, note: "after the edit", when: niceTime(pair.timeB) }
       ].sort(() => Math.random() - 0.5)
     };
   }
   return null;
 }
 
-// Old vs now mode: a sentence from a random old version against the same spot today.
-async function makeOldRound() {
-  const title = await pickTitle(0.9);
-  if (SUS.test(title)) return null;
-  const data = await api({
-    action: "query", prop: "revisions", titles: title,
-    rvlimit: "1", rvdir: "older", rvstart: randomTime(), rvprop: "ids|timestamp"
-  });
-  const rev = (data.query.pages[0].revisions || [])[0];
-  if (!rev) return null;
-  const pair = await diffPair({ fromrev: String(rev.revid), torelative: "cur" }, MIN_CHANGE.old);
-  if (!pair) return null;
-  const partsA = pair.partsA, partsB = pair.partsB;
-  return {
-    title: title,
-    summary: "",
-    diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
-      "&diff=cur&oldid=" + rev.revid,
-    options: [
-      { text: pair.textA, parts: partsA, survived: false, note: "an old version", when: niceTime(pair.timeA) },
-      { text: pair.textB, parts: partsB, survived: true, note: "the current version", when: niceTime(pair.timeB) }
-    ].sort(() => Math.random() - 0.5)
-  };
-}
-
 // Try two articles at the same time and keep the first good result.
 async function buildRound(m) {
   let lastError = null, done = false;
   const worker = async () => {
-    for (let n = 0; n < 15 && !done; n++) {
+    for (let n = 0; n < 25 && !done; n++) {
       try {
         const round = m === "old" ? await makeOldRound() : await makeRevertRound();
         if (round) return round;
@@ -448,8 +446,7 @@ function guess(i) {
     btn.classList.add(opt.survived ? "survived" : "lost");
     if (k === i) btn.classList.add("picked");
     btn.querySelector(".tag").textContent =
-      "Version " + (k + 1) + (opt.survived ? " (on the page today)" : " (gone)") +
-      " - " + opt.note + (opt.when ? " - " + opt.when : "");
+      "Version " + (k + 1) + " - " + opt.note + (opt.when ? " - " + opt.when : "");
   });
   $("verdict").textContent = correct ? "You got it." : "Not this time.";
   $("verdict").className = "verdict " + (correct ? "good" : "bad");
@@ -499,8 +496,8 @@ function setMode(m) {
   $("mRevert").classList.toggle("on", m === "revert");
   $("mOld").classList.toggle("on", m === "old");
   $("sub").textContent = m === "revert"
-    ? "Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?"
-    : "One sentence is from an old version of an article, the other is on the page today. Which one is current?";
+    ? "Someone changed a sentence on Wikipedia, then someone changed it back. Which version is the one that was put back?"
+    : "Someone edited a sentence on Wikipedia. Which version is the one after the edit?";
   nextRound();
 }
 
