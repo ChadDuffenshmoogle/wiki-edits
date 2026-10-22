@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v27</div>
+<div class="ver">v28</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -125,7 +125,7 @@ let region = "US";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
 // Skip profanity, slurs and crude insults in article titles and sentences.
-const BAD_TEXT = /\b(fuck\w*|shit\w*|bullshit|bitch\w*|cunt\w*|dick\w*|cock\w*|pussy|asshole\w*|arse\w*|bastard\w*|piss\w*|crap\w*|damn\w*|bollocks|wank\w*|twat|slut\w*|whore\w*|bimbo\w*|topless|retard\w*|spastic|moron\w*|idiot\w*|stupid|nigg\w*|negro\w*|coon|chink\w*|gook|spic|wetback|kike|fag|fags|faggot\w*|dyke|tranny|shemale|paki|raghead|towelhead|honky|poop\w*|fart\w*|boob\w*|tits?|butt|gay|gays|lesbian\w*|homosexual\w*|nationalist\w*|supremac\w*|nazi\w*|fascis\w*|racis\w*|sexis\w*|assassinat\w*|murder\w*|kill\w*|shot|shoot\w*|massacre\w*|genocide\w*|holocaust|terror\w*|bomb\w*|suicid\w*|died|dies|death|deaths|dead|fatal\w*|victims?|funeral\w*|tragedy|tragic|disaster|crash\w*|war crimes?|execut\w*|stabb\w*|lynch\w*|abus\w*|kidnap\w*|hostages?|manslaughter|overdos\w*|casualt\w*)\b/i;
+const BAD_TEXT = /\b(fuck\w*|shit\w*|bullshit|bitch\w*|cunt\w*|dick\w*|cock\w*|pussy|asshole\w*|arse\w*|bastard\w*|piss\w*|crap\w*|damn\w*|bollocks|wank\w*|twat|slut\w*|whore\w*|bimbo\w*|topless|retard\w*|spastic|moron\w*|idiot\w*|stupid|nigg\w*|negro\w*|coon|chink\w*|gook|spic|wetback|kike|fag|fags|faggot\w*|dyke|tranny|shemale|paki|raghead|towelhead|honky|poop\w*|fart\w*|boob\w*|tits?|butt|gay|gays|lesbian\w*|homosexual\w*|nationalist\w*|supremac\w*|nazi\w*|fascis\w*|racis\w*|sexis\w*|assassinat\w*|murder\w*|kill\w*|shot|shoot\w*|massacre\w*|genocide\w*|holocaust|terror\w*|bomb\w*|suicid\w*|died|dies|death|deaths|dead|fatal\w*|victims?|funeral\w*|tragedy|tragic|disaster|crash\w*|war crimes?|execut\w*|stabb\w*|lynch\w*|abus\w*|kidnap\w*|hostages?|manslaughter|overdos\w*|casualt\w*|brothel\w*|hooker\w*|pimp\w*|harlot\w*|sexual\w*|sexy|horny|boner|lust\w*|aroused|arousal|molest\w*|semen|orgy|fetish\w*)\b/i;
 // Gender-swap vandalism: skip when a pronoun or gendered word is among the changed words.
 const GENDER = /^(he|she|his|her|hers|him|himself|herself|man|woman|men|women|male|female|boy|girl|mr|mrs|ms)$/i;
 // Skip edits whose note is about hate or bigotry (racism, sexism and the other -isms).
@@ -136,6 +136,9 @@ const MIN_CHANGE = 0.15;
 let score = 0, played = 0, streak = 0;
 let current = null;
 const DAILY_COUNT = 5;
+// Debug numbers: open the browser console and type wikiDebug to see them.
+const wikiDebug = { attempts: 0, noEdits: 0, noPair: 0, repeats: 0, unsafe: 0, found: {}, shown: {} };
+window.wikiDebug = wikiDebug;
 const SHARE_URL = "https://chadduffenshmoogle.github.io/wiki-edits/";
 
 // Saved in this browser only (so "never the same edit twice" is per browser).
@@ -299,8 +302,16 @@ function isFunnyNote(c) {
   return (FUNNY_AI_WORDS.test(c) || FUNNY_AI.test(c) || FUNNY_AMBIGUOUS.test(c)) && NOTE_ACTION.test(c);
 }
 // Lower number = funnier: vandalism and AI text first.
+// Plain "vandalism" notes are the most common by far, so notes with any other keyword come first.
+const VANDAL_WORDS = /\b(vandal\w*|rvv)\b/gi;
 function funTier(c) {
-  return FUNNY_STRONG.test(c) || FUNNY_AI_WORDS.test(c) || FUNNY_AI.test(c) ? 0 : 1;
+  const other = c.replace(VANDAL_WORDS, "");
+  return FUNNY_STRONG.test(other) || FUNNY_AI_WORDS.test(other) || FUNNY_AI.test(other) || FUNNY_AMBIGUOUS.test(other) ? 0 : 1;
+}
+// Which keyword made a note count (for the console debug numbers).
+function keywordOf(c) {
+  const m = c.match(FUNNY_STRONG) || c.match(FUNNY_AI_WORDS) || c.match(FUNNY_AI) || c.match(FUNNY_AMBIGUOUS);
+  return m ? m[0].toLowerCase() : "?";
 }
 
 // Turn wiki code into plain readable text.
@@ -458,6 +469,10 @@ async function findFunnyEdits(title, rand) {
   const found = (data.query.pages[0].revisions || [])
     .filter((r) => r.parentid && isFunnyNote(cleanComment(r.comment || "")))
     .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment) }));
+  found.forEach((r) => {
+    const k = keywordOf(r.note);
+    wikiDebug.found[k] = (wikiDebug.found[k] || 0) + 1;
+  });
   return shuffle(found, rand).sort((a, b) => funTier(a.note) - funTier(b.note)).slice(0, 5);
 }
 
@@ -506,17 +521,21 @@ async function makeRound(rand, isDaily, avoid) {
     title = await pickTitle(0.95, rand);
   }
   if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title))) return null;
+  wikiDebug.attempts++;
   if (!isDaily) syncSeen();
   const edits = await findFunnyEdits(title, rand);
-  if (edits.length === 0) return null;
+  if (edits.length === 0) { wikiDebug.noEdits++; return null; }
   for (const rc of edits) {
     if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
     const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
-    if (!pair) continue;
+    if (!pair) { wikiDebug.noPair++; continue; }
     if ([...pair.partsA, ...pair.partsB].some((w) => w.d && GENDER.test(w.t.replace(/\W/g, "")))) continue;
     const key = textKey(pair.textA, pair.textB);
-    if (!isDaily && seen.has(key)) continue;
-    if (!(await isSafeArticle(title))) return null;
+    if (!isDaily && seen.has(key)) { wikiDebug.repeats++; continue; }
+    if (!(await isSafeArticle(title))) { wikiDebug.unsafe++; return null; }
+    const keyword = keywordOf(rc.note);
+    wikiDebug.shown[keyword] = (wikiDebug.shown[keyword] || 0) + 1;
+    console.info("[wiki] found:", title, "| keyword:", keyword, "| note:", rc.note);
     return {
       revid: rc.revid,
       key: key,
@@ -709,6 +728,7 @@ function guess(i) {
 
 async function nextRound() {
   const my = ++ticket;
+  const t0 = performance.now();
   if (mode === "daily" && daily.results.length >= DAILY_COUNT) mode = "endless";
   $("game").classList.add("hidden");
   $("status").textContent = mode === "daily" ? "Loading today's challenge..." : "Loading a real edit war...";
@@ -726,6 +746,8 @@ async function nextRound() {
     if (!round) round = await (mode === "daily" ? buildDaily(k, daily.titles.slice(0, k)) : buildRound());
     if (my !== ticket) return;
     show(round);
+    console.info("[wiki] question ready in " + Math.round(performance.now() - t0) + " ms (" +
+      (waiting && waiting.tag === tag ? "prefetched" : "built fresh") + ") | attempts so far: " + wikiDebug.attempts);
     prefetchNext();
   } catch (e) {
     if (my !== ticket) return;
