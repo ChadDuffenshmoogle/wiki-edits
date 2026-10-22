@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v37</div>
+<div class="ver">v38</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -185,7 +185,8 @@ let mode = daily.results.length >= DAILY_COUNT ? "endless" : "daily";
 const $ = (id) => document.getElementById(id);
 
 // Politeness: only a few requests at once, a small gap between them, and when Wikipedia says
-// "slow down" (429) every request waits.
+// "slow down" every request waits. Its slow-down reply has no permission header, so the browser
+// shows it as a blocked ("Failed to fetch") request instead of a 429, and that counts too.
 const MAX_REQUESTS = 3;
 const GAP_MS = 120;
 let inFlight = 0, pausedUntil = 0, nextStart = 0;
@@ -203,28 +204,39 @@ function freeSlot() {
 }
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function api(params) {
-  const url = API + "?" + new URLSearchParams({ ...params, format: "json", formatversion: "2", origin: "*" });
+async function limitedFetch(url) {
   await takeSlot();
   try {
     for (let tries = 0; ; tries++) {
       const startAt = Math.max(Date.now(), pausedUntil, nextStart);
       nextStart = startAt + GAP_MS;
       if (startAt > Date.now()) await pause(startAt - Date.now());
-      const res = await fetch(url);
-      if (res.status === 429 && tries < 4) {
-        pausedUntil = Math.max(pausedUntil, Date.now() + 3000 * 2 ** tries + Math.random() * 1000);
-        progress("Wikipedia asked us to slow down, waiting a few seconds...");
+      let res = null;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        res = null;
+      }
+      if ((res === null || res.status === 429) && tries < 4) {
+        pausedUntil = Math.max(pausedUntil, Date.now() + 2000 * 2 ** tries + Math.random() * 1000);
+        progress("Wikipedia is busy, waiting a few seconds before trying again...");
         continue;
       }
-      if (!res.ok) throw new Error("Wikipedia answered with status " + res.status);
-      const data = await res.json();
-      if (data.error) throw new Error("Wikipedia said: " + data.error.info);
-      return data;
+      if (res === null) throw new Error("Could not reach Wikipedia (it may be asking us to slow down). Wait a minute and try again.");
+      return res;
     }
   } finally {
     freeSlot();
   }
+}
+
+async function api(params) {
+  const url = API + "?" + new URLSearchParams({ ...params, format: "json", formatversion: "2", origin: "*" });
+  const res = await limitedFetch(url);
+  if (!res.ok) throw new Error("Wikipedia answered with status " + res.status);
+  const data = await res.json();
+  if (data.error) throw new Error("Wikipedia said: " + data.error.info);
+  return data;
 }
 
 // Well-known articles: what people in the chosen country (or worldwide) read most, in each of the
@@ -234,7 +246,7 @@ async function topList(country, year, month) {
   const url = country
     ? base + "top-per-country/" + country + "/all-access/" + year + "/" + month + "/15"
     : base + "top/en.wikipedia/all-access/" + year + "/" + month + "/all-days";
-  const res = await fetch(url);
+  const res = await limitedFetch(url);
   if (!res.ok) throw new Error("Pageview list answered with status " + res.status);
   const data = await res.json();
   return data.items[0].articles
@@ -663,12 +675,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Daily question number k. Every attempt has its own seed and the lowest attempt that works wins,
 // so everyone gets the same question no matter how fast their connection is.
 async function tryDailyAttempt(k, i, avoid) {
-  for (let t = 0; t < 3; t++) {
+  for (let t = 0; t < 2; t++) {
     try {
       return await makeRound(makeRng(daily.key + ":" + k + ":" + i), true, avoid);
     } catch (e) {
       console.error(e);
-      await sleep(800);
+      await sleep(2000);
     }
   }
   return null;
@@ -676,8 +688,8 @@ async function tryDailyAttempt(k, i, avoid) {
 
 async function buildDaily(k, avoid) {
   await getDailyPool();
-  for (let i = 0; i < 90; i += 6) {
-    const batch = await Promise.all(Array.from({ length: 6 }, (_, j) => tryDailyAttempt(k, i + j, avoid)));
+  for (let i = 0; i < 90; i += 3) {
+    const batch = await Promise.all(Array.from({ length: 3 }, (_, j) => tryDailyAttempt(k, i + j, avoid)));
     const hit = batch.find(Boolean);
     if (hit) return hit;
   }
