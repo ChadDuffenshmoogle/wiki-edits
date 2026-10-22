@@ -22,7 +22,7 @@
   main { max-width: 900px; margin: 0 auto; padding: 28px 18px 60px; }
   h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.01em; }
   .sub { color: var(--muted); margin: 0 0 20px; }
-  .bar { display: flex; gap: 18px; font-family: system-ui, sans-serif; font-size: 0.9rem; color: var(--muted); margin-bottom: 14px; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; font-family: system-ui, sans-serif; font-size: 0.9rem; color: var(--muted); margin-bottom: 14px; }
   .bar b { color: var(--ink); }
   .wikititle { font: normal 1.9rem/1.25 "Linux Libertine", Georgia, Times, serif; margin: 0 0 2px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
   .wikititle a { color: var(--ink); text-decoration: none; }
@@ -54,6 +54,10 @@
           border-radius: 6px; padding: 10px 18px; cursor: pointer; }
   .status { font-family: system-ui, sans-serif; color: var(--muted); padding: 30px 0; }
   .hidden { display: none; }
+  .linkbtn { font: inherit; background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; }
+  #shareBox { margin-top: 14px; }
+  #shareText { width: 100%; margin: 8px 0 4px; padding: 8px; resize: none; font: 0.9rem ui-monospace, Menlo, Consolas, monospace;
+               background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
   .choice mark { color: inherit; border-radius: 3px; padding: 0 1px; }
   .choice mark { background: rgba(240, 180, 40, 0.38); }
   .ver { position: fixed; top: 8px; right: 10px; font: 0.75rem system-ui, sans-serif; color: var(--muted); opacity: 0.8; }
@@ -62,14 +66,16 @@
 </style>
 </head>
 <body>
-<div class="ver">v19</div>
+<div class="ver">v20</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
 
   <div class="bar">
+    <span id="modeLabel"></span>
     <span>Score <b id="score">0</b> / <b id="played">0</b></span>
     <span>Streak <b id="streak">0</b></span>
+    <button class="linkbtn hidden" id="dailyBtn">Copy today's daily result</button>
   </div>
 
   <div id="status" class="status">Loading a real edit war...</div>
@@ -90,6 +96,11 @@
       <div id="verdict" class="verdict"></div>
       <p id="summary"></p>
       <p><a id="diffLink" target="_blank" rel="noopener">See the real edit on Wikipedia</a></p>
+      <div id="shareBox" class="hidden">
+        <div class="verdict" id="shareHead"></div>
+        <textarea id="shareText" readonly rows="4"></textarea>
+        <button class="next" id="copyBtn">Copy for Discord</button>
+      </div>
       <button class="next" id="nextBtn">Next edit war</button>
     </div>
   </section>
@@ -117,6 +128,30 @@ const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|peni
 const MIN_CHANGE = 0.15;
 let score = 0, played = 0, streak = 0;
 let current = null;
+const DAILY_COUNT = 5;
+const SHARE_URL = "https://chadduffenshmoogle.github.io/wiki-edits/";
+
+// Saved in this browser only (so "never the same edit twice" is per browser).
+function load(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
+const seen = new Set(load("wikiSeen", []));
+function saveSeen() { save("wikiSeen", [...seen].slice(-4000)); }
+
+// The daily challenge: same five questions for everyone on the same UTC date.
+const todayKey = new Date().toISOString().slice(0, 10);
+const dailyNumber = Math.max(1, Math.floor((Date.parse(todayKey) - Date.UTC(2026, 9, 21)) / 864e5) + 1);
+let daily = load("wikiDaily", null);
+if (!daily || daily.key !== todayKey) daily = { key: todayKey, results: [], titles: [] };
+let mode = daily.results.length >= DAILY_COUNT ? "endless" : "daily";
 
 const $ = (id) => document.getElementById(id);
 
@@ -150,14 +185,15 @@ async function topList(country, year, month) {
     .map((a) => a.article.replace(/_/g, " "));
 }
 
-async function loadPool(country) {
-  const lists = await Promise.all([1, 2, 3].map(async (back) => {
+async function loadPool(country, strict, backs) {
+  const lists = await Promise.all(backs.map(async (back) => {
     const d = new Date();
     d.setUTCDate(1);
     d.setUTCMonth(d.getUTCMonth() - back);
     try {
       return await topList(country, d.getUTCFullYear(), String(d.getUTCMonth() + 1).padStart(2, "0"));
     } catch (e) {
+      if (strict) throw e;
       console.error(e);
       return [];
     }
@@ -168,19 +204,30 @@ async function loadPool(country) {
     t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t));
   const steady = titles.filter((t) => counts.get(t) >= 2);
   if (steady.length >= 80) titles = steady;
-  if (titles.length === 0 && country) return loadPool("");
+  if (titles.length === 0 && strict) throw new Error("No popular articles found");
+  if (titles.length === 0 && country) return loadPool("", false, backs);
   return titles;
 }
 
 async function getPool() {
-  if (!poolPromise) poolPromise = loadPool(region);
+  if (!poolPromise) poolPromise = loadPool(region, false, [1, 2, 3]);
   return poolPromise.catch(() => []);
 }
 
-async function pickTitle(popularChance) {
-  if (Math.random() < popularChance) {
+// The daily challenge always uses the United States list from 2 to 4 months back, so it is the same
+// for everyone and does not change when a new month's list is published.
+let dailyPoolPromise = null;
+function getDailyPool() {
+  if (!dailyPoolPromise) {
+    dailyPoolPromise = loadPool("US", true, [2, 3, 4]).catch((e) => { dailyPoolPromise = null; throw e; });
+  }
+  return dailyPoolPromise;
+}
+
+async function pickTitle(popularChance, rand) {
+  if (rand() < popularChance) {
     const pool = await getPool();
-    if (pool.length > 0) return pool[Math.floor(Math.random() * pool.length)];
+    if (pool.length > 0) return pool[Math.floor(rand() * pool.length)];
   }
   const data = await api({ action: "query", list: "random", rnnamespace: "0", rnlimit: "10" });
   const safe = data.query.random.map((r) => r.title).filter((t) => !SUS.test(t));
@@ -188,9 +235,36 @@ async function pickTitle(popularChance) {
 }
 
 // A random moment since Wikipedia started (January 2001).
-function randomTime() {
+function randomTime(rand) {
   const first = Date.UTC(2001, 0, 15);
-  return new Date(first + Math.random() * (Date.now() - first)).toISOString();
+  return new Date(first + rand() * (Date.now() - first)).toISOString();
+}
+
+// Seeded random numbers: the same seed always gives the same numbers.
+function makeRng(seed) {
+  let h = 1779033703 ^ seed.length;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  h = Math.imul(h ^ (h >>> 16), 2246822507);
+  h = Math.imul(h ^ (h >>> 13), 3266489909);
+  let a = (h ^ (h >>> 16)) >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle(list, rand) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 // The edit note decides what counts: it has to say something silly or bad was cleaned up.
@@ -294,7 +368,7 @@ function splitSentences(text) {
 }
 
 // Ask Wikipedia for just the changed lines (small), then find one sentence that was reworded.
-async function diffPair(params, minChange) {
+async function diffPair(params, minChange, rand) {
   const data = await api({ action: "compare", prop: "diff|timestamp", ...params });
   const html = (data.compare && data.compare.body) || "";
   const doc = new DOMParser().parseFromString("<table>" + html + "</table>", "text/html");
@@ -307,8 +381,7 @@ async function diffPair(params, minChange) {
     if (/\[\[(File|Image|Category|Media):/i.test(r + b)) return;
     rows.push([r, b]);
   });
-  rows.sort(() => Math.random() - 0.5);
-  for (const [r, b] of rows) {
+  for (const [r, b] of shuffle(rows, rand)) {
     const sentsA = splitSentences(clean(r)), sentsB = splitSentences(clean(b));
     const pairs = [];
     for (const sa of sentsA) {
@@ -325,7 +398,7 @@ async function diffPair(params, minChange) {
       if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
     }
     if (pairs.length > 0) {
-      const pick = pairs[Math.floor(Math.random() * pairs.length)];
+      const pick = pairs[Math.floor(rand() * pairs.length)];
       return { ...pick, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
     }
   }
@@ -358,17 +431,15 @@ function wikiUrl(title) {
 }
 
 // Scan one well-known article's history from a random moment for edits with a funny note.
-async function findFunnyEdits(title) {
+async function findFunnyEdits(title, rand) {
   const data = await api({
     action: "query", prop: "revisions", titles: title,
-    rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|comment"
+    rvlimit: "500", rvdir: "newer", rvstart: randomTime(rand), rvprop: "ids|comment"
   });
-  return (data.query.pages[0].revisions || [])
+  const found = (data.query.pages[0].revisions || [])
     .filter((r) => r.parentid && isFunnyNote(cleanComment(r.comment || "")))
-    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment) }))
-    .sort(() => Math.random() - 0.5)
-    .sort((a, b) => funTier(a.note) - funTier(b.note))
-    .slice(0, 5);
+    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment) }));
+  return shuffle(found, rand).sort((a, b) => funTier(a.note) - funTier(b.note)).slice(0, 5);
 }
 
 // The article's main picture, if it has one.
@@ -383,35 +454,44 @@ async function getImage(title) {
 }
 
 // One round: the older sentence is the mistake and the newer one is the fix.
-async function makeRound() {
-  const title = await pickTitle(0.95);
-  if (SUS.test(title)) return null;
-  for (const rc of await findFunnyEdits(title)) {
-    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE);
+// Endless rounds skip edits this browser has already shown. Daily rounds only use the seeded random numbers.
+async function makeRound(rand, isDaily, avoid) {
+  let title;
+  if (isDaily) {
+    const pool = await getDailyPool();
+    title = pool[Math.floor(rand() * pool.length)];
+  } else {
+    title = await pickTitle(0.95, rand);
+  }
+  if (SUS.test(title) || (avoid && avoid.includes(title))) return null;
+  for (const rc of await findFunnyEdits(title, rand)) {
+    if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
+    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
     if (!pair) continue;
     return {
+      revid: rc.revid,
       title: title,
       image: await getImage(title),
       summary: "Note from the editor who made the change: ",
       note: rc.note,
       diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
         "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
-      options: [
+      options: shuffle([
         { text: pair.textA, parts: pair.partsA, answer: false, when: niceTime(pair.timeA) },
         { text: pair.textB, parts: pair.partsB, answer: true, when: niceTime(pair.timeB) }
-      ].sort(() => Math.random() - 0.5)
+      ], rand)
     };
   }
   return null;
 }
 
-// Try two articles at the same time and keep the first good result.
+// Endless mode: try two articles at the same time and keep the first good result.
 async function buildRound() {
   let lastError = null, done = false;
   const worker = async () => {
     for (let n = 0; n < 25 && !done; n++) {
       try {
-        const round = await makeRound();
+        const round = await makeRound(Math.random, false);
         if (round) return round;
       } catch (e) {
         console.error(e);
@@ -429,14 +509,93 @@ async function buildRound() {
   }
 }
 
-// Start building the next round while the player is still reading this one.
-function prefetch() {
-  prefetched = buildRound();
-  prefetched.catch(() => {});
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Daily question number k. Every attempt has its own seed and the lowest attempt that works wins,
+// so everyone gets the same question no matter how fast their connection is.
+async function tryDailyAttempt(k, i, avoid) {
+  for (let t = 0; t < 3; t++) {
+    try {
+      return await makeRound(makeRng(daily.key + ":" + k + ":" + i), true, avoid);
+    } catch (e) {
+      console.error(e);
+      await sleep(800);
+    }
+  }
+  return null;
+}
+
+async function buildDaily(k, avoid) {
+  await getDailyPool();
+  for (let i = 0; i < 90; i += 3) {
+    const batch = await Promise.all([i, i + 1, i + 2].map((n) => tryDailyAttempt(k, n, avoid)));
+    const hit = batch.find(Boolean);
+    if (hit) return hit;
+  }
+  throw new Error("Could not build today's challenge");
+}
+
+// Start building the next question while the player is still reading this one.
+function prefetchNext() {
+  const k = daily.results.length;
+  let tag, promise;
+  if (mode === "daily" && k + 1 < DAILY_COUNT) {
+    tag = "daily" + (k + 1);
+    promise = buildDaily(k + 1, daily.titles.slice(0, k + 1));
+  } else {
+    tag = "endless";
+    promise = buildRound();
+  }
+  prefetched = { tag: tag, promise: promise };
+  promise.catch(() => {});
+}
+
+function dailyScore() { return daily.results.reduce((a, b) => a + b, 0); }
+
+// Text to paste into Discord (Discord markdown).
+function shareText() {
+  const squares = daily.results.map((r) => (r ? "🟩" : "🟥")).join("");
+  return "**Wiki Edit War - Daily #" + dailyNumber + "** (" + daily.key + ")\n" +
+    squares + " **" + dailyScore() + "/" + DAILY_COUNT + "**\n" + SHARE_URL;
+}
+
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const box = document.createElement("textarea");
+    box.value = text;
+    document.body.appendChild(box);
+    box.select();
+    try { document.execCommand("copy"); } catch (err) {}
+    box.remove();
+  }
+  const label = btn.dataset.label || btn.textContent;
+  btn.dataset.label = label;
+  btn.textContent = "Copied!";
+  setTimeout(() => { btn.textContent = label; }, 1500);
+}
+
+function renderBar() {
+  const isDaily = mode === "daily";
+  $("score").textContent = isDaily ? dailyScore() : score;
+  $("played").textContent = isDaily ? daily.results.length : played;
+  $("streak").textContent = streak;
+  $("dailyBtn").classList.toggle("hidden", !(mode === "endless" && daily.results.length >= DAILY_COUNT));
 }
 
 function show(round) {
   current = round;
+  seen.add(round.revid);
+  saveSeen();
+  if (mode === "daily") {
+    daily.titles[daily.results.length] = round.title;
+    save("wikiDaily", daily);
+  }
+  $("modeLabel").textContent = mode === "daily"
+    ? "Daily challenge #" + dailyNumber + " - question " + (daily.results.length + 1) + " of " + DAILY_COUNT
+    : "Endless";
+  renderBar();
   $("articleLink").textContent = round.title;
   $("articleLink").href = wikiUrl(round.title);
   $("pic").classList.toggle("hidden", !round.image);
@@ -450,6 +609,7 @@ function show(round) {
     btn.querySelector(".tag").textContent = "Version " + (i + 1);
   });
   $("result").classList.add("hidden");
+  $("shareBox").classList.add("hidden");
   $("status").classList.add("hidden");
   $("game").classList.remove("hidden");
 }
@@ -457,8 +617,14 @@ function show(round) {
 function guess(i) {
   const opts = current.options;
   const correct = opts[i].answer;
-  played++;
-  if (correct) { score++; streak++; } else { streak = 0; }
+  if (correct) streak++; else streak = 0;
+  if (mode === "daily") {
+    daily.results.push(correct ? 1 : 0);
+    save("wikiDaily", daily);
+  } else {
+    played++;
+    if (correct) score++;
+  }
   opts.forEach((opt, k) => {
     const btn = $("c" + k);
     btn.disabled = true;
@@ -478,30 +644,38 @@ function guess(i) {
     $("summary").appendChild(bold);
   }
   $("diffLink").href = current.diffUrl;
-  $("score").textContent = score;
-  $("played").textContent = played;
-  $("streak").textContent = streak;
+  renderBar();
+  const finished = mode === "daily" && daily.results.length >= DAILY_COUNT;
+  $("shareBox").classList.toggle("hidden", !finished);
+  if (finished) {
+    $("shareHead").textContent = "Daily challenge complete: " + dailyScore() + "/" + DAILY_COUNT;
+    $("shareText").value = shareText();
+  }
+  $("nextBtn").textContent = finished ? "Keep playing (endless)" : mode === "daily" ? "Next question" : "Next edit war";
   $("result").classList.remove("hidden");
   $("nextBtn").focus();
 }
 
 async function nextRound() {
   const my = ++ticket;
+  if (mode === "daily" && daily.results.length >= DAILY_COUNT) mode = "endless";
   $("game").classList.add("hidden");
-  $("status").textContent = "Loading a real edit war...";
+  $("status").textContent = mode === "daily" ? "Loading today's challenge..." : "Loading a real edit war...";
   $("status").classList.remove("hidden");
   $("retryBtn").classList.add("hidden");
   try {
+    const k = daily.results.length;
+    const tag = mode === "daily" ? "daily" + k : "endless";
     const waiting = prefetched;
     prefetched = null;
     let round = null;
-    if (waiting) {
-      try { round = await waiting; } catch (e) { console.error(e); }
+    if (waiting && waiting.tag === tag) {
+      try { round = await waiting.promise; } catch (e) { console.error(e); }
     }
-    if (!round) round = await buildRound();
+    if (!round) round = await (mode === "daily" ? buildDaily(k, daily.titles.slice(0, k)) : buildRound());
     if (my !== ticket) return;
     show(round);
-    prefetch();
+    prefetchNext();
   } catch (e) {
     if (my !== ticket) return;
     $("status").textContent = "Something went wrong: " + e.message;
@@ -511,6 +685,11 @@ async function nextRound() {
 
 $("c0").addEventListener("click", () => guess(0));
 $("c1").addEventListener("click", () => guess(1));
+$("nextBtn").addEventListener("click", nextRound);
+$("retryBtn").addEventListener("click", nextRound);
+$("copyBtn").addEventListener("click", () => copyText(shareText(), $("copyBtn")));
+$("dailyBtn").addEventListener("click", () => copyText(shareText(), $("dailyBtn")));
+
 try {
   const saved = localStorage.getItem("wikiRegion");
   if (saved !== null) region = saved;
@@ -521,11 +700,10 @@ $("region").addEventListener("change", () => {
   try { localStorage.setItem("wikiRegion", region); } catch (e) {}
   poolPromise = null;
   prefetched = null;
-  nextRound();
+  if (mode === "endless") nextRound();
 });
 
-$("nextBtn").addEventListener("click", nextRound);
-$("retryBtn").addEventListener("click", nextRound);
+renderBar();
 nextRound();
 </script>
 </body>
