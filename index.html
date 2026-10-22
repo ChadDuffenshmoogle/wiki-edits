@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v35</div>
+<div class="ver">v36</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -143,6 +143,12 @@ const DAILY_COUNT = 5;
 // Debug numbers: open the browser console and type wikiDebug to see them.
 const wikiDebug = { attempts: 0, noEdits: 0, noPair: 0, repeats: 0, unsafe: 0, found: {}, shown: {} };
 window.wikiDebug = wikiDebug;
+// Shows what is happening right now while a question is loading, so it doesn't look stuck.
+let loading = false;
+function progress(text) {
+  if (!loading) return;
+  $("status").textContent = text + (wikiDebug.attempts ? " (" + wikiDebug.attempts + " articles checked so far)" : "");
+}
 const SHARE_URL = "https://chadduffenshmoogle.github.io/wiki-edits/";
 
 // Saved in this browser only (so "never the same edit twice" is per browser).
@@ -178,9 +184,11 @@ let mode = daily.results.length >= DAILY_COUNT ? "endless" : "daily";
 
 const $ = (id) => document.getElementById(id);
 
-// Politeness: only a few requests at once, and everyone waits when Wikipedia says "slow down" (429).
-const MAX_REQUESTS = 4;
-let inFlight = 0;
+// Politeness: only a few requests at once, a small gap between them, and when Wikipedia says
+// "slow down" (429) every request waits.
+const MAX_REQUESTS = 3;
+const GAP_MS = 120;
+let inFlight = 0, pausedUntil = 0, nextStart = 0;
 const slotQueue = [];
 function takeSlot() {
   return new Promise((resolve) => {
@@ -193,15 +201,20 @@ function freeSlot() {
   const next = slotQueue.shift();
   if (next) next();
 }
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function api(params) {
   const url = API + "?" + new URLSearchParams({ ...params, format: "json", formatversion: "2", origin: "*" });
   await takeSlot();
   try {
     for (let tries = 0; ; tries++) {
+      const startAt = Math.max(Date.now(), pausedUntil, nextStart);
+      nextStart = startAt + GAP_MS;
+      if (startAt > Date.now()) await pause(startAt - Date.now());
       const res = await fetch(url);
       if (res.status === 429 && tries < 4) {
-        await new Promise((r) => setTimeout(r, 2000 * 2 ** tries + Math.random() * 500));
+        pausedUntil = Math.max(pausedUntil, Date.now() + 3000 * 2 ** tries + Math.random() * 1000);
+        progress("Wikipedia asked us to slow down, waiting a few seconds...");
         continue;
       }
       if (!res.ok) throw new Error("Wikipedia answered with status " + res.status);
@@ -254,7 +267,10 @@ async function loadPool(country, strict, backs) {
 }
 
 async function getPool() {
-  if (!poolPromise) poolPromise = loadPool(region, false, [1, 2, 3]);
+  if (!poolPromise) {
+    progress("Loading the list of popular articles...");
+    poolPromise = loadPool(region, false, [1, 2, 3]);
+  }
   return poolPromise.catch(() => []);
 }
 
@@ -263,6 +279,7 @@ async function getPool() {
 let dailyPoolPromise = null;
 function getDailyPool() {
   if (!dailyPoolPromise) {
+    progress("Loading the list of popular articles...");
     dailyPoolPromise = loadPool("US", true, [2, 3, 4])
       .catch(() => loadPool("", true, [2, 3, 4]))
       .catch((e) => { dailyPoolPromise = null; throw e; });
@@ -551,6 +568,7 @@ const spare = [];
 // or false if the whole article is off limits.
 async function roundFromEdit(title, rc, rand, isDaily) {
   if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) return null;
+  progress("Comparing two versions of " + title + "...");
   const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
   if (!pair) { wikiDebug.noPair++; return null; }
   const flagged = [...pair.partsA, ...pair.partsB].some((w) =>
@@ -558,10 +576,12 @@ async function roundFromEdit(title, rc, rand, isDaily) {
   if (flagged) return null;
   const key = textKey(pair.textA, pair.textB);
   if (!isDaily && seen.has(key)) { wikiDebug.repeats++; return null; }
+  progress("Checking that " + title + " is a suitable article...");
   if (!(await isSafeArticle(title))) { wikiDebug.unsafe++; return false; }
   const keyword = keywordOf(rc.note);
   wikiDebug.shown[keyword] = (wikiDebug.shown[keyword] || 0) + 1;
   console.info("[wiki] found:", title, "| keyword:", keyword, "| note:", rc.note);
+  progress("Fetching the picture for " + title + "...");
   return {
     revid: rc.revid,
     key: key,
@@ -583,6 +603,7 @@ async function roundFromEdit(title, rc, rand, isDaily) {
 async function makeRound(rand, isDaily, avoid) {
   if (!isDaily && spare.length > 0) {
     const item = spare.splice(Math.floor(Math.random() * spare.length), 1)[0];
+    progress("Checking an edit found earlier on " + item.title + "...");
     syncSeen();
     return (await roundFromEdit(item.title, item.rc, rand, false)) || null;
   }
@@ -596,20 +617,24 @@ async function makeRound(rand, isDaily, avoid) {
   if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title))) return null;
   wikiDebug.attempts++;
   if (!isDaily) syncSeen();
+  progress("Reading the edit history of " + title + "...");
   const edits = await findFunnyEdits(title, rand);
   if (edits.length === 0) { wikiDebug.noEdits++; return null; }
-  for (let i = 0; i < edits.length; i++) {
+  const keep = (list) => list.forEach((rc) => { if (!isDaily && spare.length < 40) spare.push({ title: title, rc: rc }); });
+  const tryNow = Math.min(edits.length, 4);
+  for (let i = 0; i < tryNow; i++) {
     const round = await roundFromEdit(title, edits[i], rand, isDaily);
     if (round === false) return null;
     if (round) {
-      if (!isDaily) edits.slice(i + 1).forEach((rc) => { if (spare.length < 40) spare.push({ title: title, rc: rc }); });
+      keep(edits.slice(i + 1));
       return round;
     }
   }
+  keep(edits.slice(tryNow));
   return null;
 }
 
-// Endless mode: try four articles at the same time and keep the first good result.
+// Endless mode: try three articles at the same time and keep the first good result.
 async function buildRound() {
   let lastError = null, done = false;
   const worker = async () => {
@@ -625,7 +650,7 @@ async function buildRound() {
     throw new Error("no match");
   };
   try {
-    return await Promise.any(Array.from({ length: 4 }, () => worker()));
+    return await Promise.any(Array.from({ length: 3 }, () => worker()));
   } catch (e) {
     throw new Error("Could not find a good pair (" + (lastError ? lastError.message : "no matches") + ")");
   } finally {
@@ -789,6 +814,7 @@ async function nextRound() {
   $("status").textContent = mode === "daily" ? "Loading today's challenge..." : "Loading a real edit war...";
   $("status").classList.remove("hidden");
   $("retryBtn").classList.add("hidden");
+  loading = true;
   try {
     const k = daily.results.length;
     const tag = mode === "daily" ? "daily" + k : "endless";
@@ -800,12 +826,14 @@ async function nextRound() {
     }
     if (!round) round = await (mode === "daily" ? buildDaily(k, daily.titles.slice(0, k)) : buildRound());
     if (my !== ticket) return;
+    loading = false;
     show(round);
     console.info("[wiki] question ready in " + Math.round(performance.now() - t0) + " ms (" +
       (waiting && waiting.tag === tag ? "prefetched" : "built fresh") + ") | attempts so far: " + wikiDebug.attempts);
     prefetchNext();
   } catch (e) {
     if (my !== ticket) return;
+    loading = false;
     $("status").textContent = "Something went wrong: " + e.message;
     $("retryBtn").classList.remove("hidden");
   }
