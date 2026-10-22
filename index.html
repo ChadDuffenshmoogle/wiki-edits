@@ -24,8 +24,10 @@
   .sub { color: var(--muted); margin: 0 0 20px; }
   .bar { display: flex; gap: 18px; font-family: system-ui, sans-serif; font-size: 0.9rem; color: var(--muted); margin-bottom: 14px; }
   .bar b { color: var(--ink); }
-  .article { font-family: system-ui, sans-serif; font-size: 0.95rem; margin-bottom: 10px; }
-  .article a { color: var(--accent); }
+  .wikititle { font: normal 1.9rem/1.25 "Linux Libertine", Georgia, Times, serif; margin: 0 0 2px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+  .wikititle a { color: var(--ink); text-decoration: none; }
+  .wikititle a:hover { text-decoration: underline; }
+  .fromwiki { font: 0.82rem system-ui, sans-serif; color: var(--muted); margin-bottom: 14px; }
   .prompt { font: 600 1.05rem system-ui, sans-serif; margin: 0 0 10px; }
   .choices { display: grid; gap: 12px; }
   .choice { text-align: left; font: inherit; color: inherit; border: 2px solid var(--line); background: var(--card);
@@ -34,8 +36,8 @@
   .choice:focus-visible, .next:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .choice:disabled { cursor: default; }
   .choice .tag { font: 0.8rem system-ui, sans-serif; color: var(--muted); display: block; margin-bottom: 4px; }
-  .choice.survived { background: var(--b); border-color: var(--b-line); }
-  .choice.lost { background: var(--a); border-color: var(--a-line); }
+  .choice.correct { background: var(--b); border-color: var(--b-line); }
+  .choice.wrong { background: var(--a); border-color: var(--a-line); }
   .choice.picked { box-shadow: 0 0 0 3px var(--accent); }
   .result { font-family: system-ui, sans-serif; margin-top: 16px; }
   .result .verdict { font-size: 1.15rem; font-weight: 600; }
@@ -59,10 +61,10 @@
 </style>
 </head>
 <body>
-<div class="ver">v15</div>
+<div class="ver">v16</div>
 <main>
   <h1>Wiki Edit War</h1>
-  <p class="sub" id="sub">Two versions of one Wikipedia sentence. Answer the question above them.</p>
+  <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
 
   <div class="modes">
     <button class="mode on" id="mEasy">Easy (obvious changes)</button>
@@ -78,8 +80,9 @@
   <button class="next hidden" id="retryBtn">Try again</button>
 
   <section id="game" class="hidden">
-    <div class="article">Article: <a id="articleLink" target="_blank" rel="noopener"></a></div>
-    <p class="prompt" id="prompt"></p>
+    <h2 class="wikititle"><a id="articleLink" target="_blank" rel="noopener"></a></h2>
+    <div class="fromwiki">From Wikipedia, the free encyclopedia</div>
+    <p class="prompt" id="prompt">Which version is the fix?</p>
     <div class="choices">
       <button class="choice" id="c0"><span class="tag">Version 1</span><span class="text"></span></button>
       <button class="choice" id="c1"><span class="tag">Version 2</span><span class="text"></span></button>
@@ -106,6 +109,7 @@ const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|peni
 const CHANGE_RANGE = { revert: { easy: [0.3, 1.01], hard: [0.1, 0.3] }, fix: { easy: [0.06, 1.01], hard: [0.02, 0.06] } };
 let score = 0, played = 0, streak = 0;
 let current = null;
+let started = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -375,9 +379,9 @@ async function findOldEdits(title, kind) {
   return found.sort(() => Math.random() - 0.5).slice(0, 5);
 }
 
-// One round. Revert rounds: pick the version editors undid. Fix rounds: pick the corrected version.
+// One round: the older sentence is the mistake and the newer one is the fix.
 async function makeRound(m) {
-  const kind = Math.random() < 0.5 ? "revert" : "fix";
+  const kind = started && Math.random() < 0.4 ? "revert" : "fix";
   const fix = kind === "fix";
   let candidates;
   if (Math.random() < 0.3) {
@@ -394,14 +398,13 @@ async function makeRound(m) {
     const note = cleanComment(rc.comment || "");
     return {
       title: rc.title,
-      question: fix ? "Which version is the corrected one?" : "Which version did other editors undo?",
       summary: note ? (fix ? "Note from the editor who made the change: " : "Note from the editor who undid it: ") : "The editor left no note.",
       note: note,
       diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(rc.title.replace(/ /g, "_")) +
         "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
       options: [
-        { text: pair.textA, parts: pair.partsA, answer: !fix, good: false, note: fix ? "before the fix" : "this one was undone", when: niceTime(pair.timeA) },
-        { text: pair.textB, parts: pair.partsB, answer: fix, good: true, note: fix ? "after the fix" : "this one was kept", when: niceTime(pair.timeB) }
+        { text: pair.textA, parts: pair.partsA, answer: false, when: niceTime(pair.timeA) },
+        { text: pair.textB, parts: pair.partsB, answer: true, when: niceTime(pair.timeB) }
       ].sort(() => Math.random() - 0.5)
     };
   }
@@ -441,8 +444,8 @@ function prefetch() {
 
 function show(round) {
   current = round;
+  started = true;
   $("articleLink").textContent = round.title;
-  $("prompt").textContent = round.question;
   $("articleLink").href = wikiUrl(round.title);
   round.options.forEach((opt, i) => {
     const btn = $("c" + i);
@@ -464,10 +467,11 @@ function guess(i) {
   opts.forEach((opt, k) => {
     const btn = $("c" + k);
     btn.disabled = true;
-    btn.classList.add(opt.good ? "survived" : "lost");
+    if (opt.answer) btn.classList.add("correct");
+    else if (k === i) btn.classList.add("wrong");
     if (k === i) btn.classList.add("picked");
     btn.querySelector(".tag").textContent =
-      "Version " + (k + 1) + " - " + opt.note + (opt.when ? " - " + opt.when : "");
+      "Version " + (k + 1) + " - " + (opt.answer ? "the fix" : "the mistake") + (opt.when ? " - " + opt.when : "");
   });
   $("verdict").textContent = correct ? "You got it." : "Not this time.";
   $("verdict").className = "verdict " + (correct ? "good" : "bad");
