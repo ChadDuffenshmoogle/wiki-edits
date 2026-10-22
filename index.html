@@ -61,7 +61,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v17</div>
+<div class="ver">v18</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -106,10 +106,9 @@ let mode = "easy";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
 // Share of words that must differ between the two sentences (easy = big change, hard = small change).
-const CHANGE_RANGE = { revert: { easy: [0.3, 1.01], hard: [0.1, 0.3] }, fix: { easy: [0.06, 1.01], hard: [0.02, 0.06] } };
+const CHANGE_RANGE = { funny: { easy: [0.3, 1.01], hard: [0.1, 0.3] }, fix: { easy: [0.06, 1.01], hard: [0.02, 0.06] } };
 let score = 0, played = 0, streak = 0;
 let current = null;
-let started = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -173,14 +172,14 @@ function randomTime() {
   return new Date(first + Math.random() * (Date.now() - first)).toISOString();
 }
 
-// Two kinds of edits: "revert" = bad content removed (a tagged revert, or a note about vandalism, AI text,
-// spam and so on), "fix" = an edit whose own note says it fixed typos, grammar, spelling and so on.
-const REVERT_TAGS = ["mw-manual-revert", "mw-undo", "mw-rollback"];
+// The edit note decides what counts (no revert detection needed):
+// "funny" = the note says bad content was cleaned up (vandalism, AI text, nonsense, spam...).
+// "fix" = the note says a typo, grammar or wording problem was fixed (rare, since it is less fun).
 const FIX_NOTE = /\b(typos?|grammar|grammatical|spelling|misspell\w*|copy-?\s?edit\w*|punctuation|proofread\w*|capitali[sz]ation|wording|rephras\w*|reword\w*)\b/i;
 const REVERT_NOTE = /revert|undid|undo/i;
-// Edit notes that say bad content was cleaned up (wording taken from Wikipedia's reverting, vandalism
-// and large-language-model pages). Words that also appear in normal edits (AI, spam, NPOV...) only count
-// next to a removal word like "removed" or "revert", so "added a section on AI" does not match.
+// Wording taken from Wikipedia's reverting, vandalism and large-language-model pages. Words that also
+// appear in normal edits (AI, spam, NPOV...) only count next to a removal word like "removed" or "revert",
+// so "added a section on AI" does not match.
 const BAD_STRONG = /\b(vandal\w*|rvv|gibberish|nonsense|test edits?|unconstructive|non-?constructive|hoax|trolling|copyvio)\b/i;
 const BAD_AMBIGUOUS = /\b(LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*|spam\w*|promotional|puffery|unsourced|unverifiable|original research|NPOV|BLP|disruptive|WP:(?:NOLLM|LLM|NOR|V|RS))\b/i;
 const BAD_AI = /\b(?:AI|A\.I\.)(?!\w)/;
@@ -188,36 +187,49 @@ const BAD_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|str
 function isBadNote(c) {
   return BAD_STRONG.test(c) || ((BAD_AMBIGUOUS.test(c) || BAD_AI.test(c)) && BAD_ACTION.test(c));
 }
-const queues = { revert: [], fix: [] };
-const refilling = {};
+function noteKind(c) {
+  if (isBadNote(c)) return "funny";
+  if (FIX_NOTE.test(c) && !REVERT_NOTE.test(c)) return "fix";
+  return null;
+}
+// Lower number = funnier: vandalism and AI text first, then spam, then sourcing disputes.
+function funTier(c) {
+  if (/\b(vandal\w*|rvv|nonsense|gibberish|hoax|trolling|test edits?|LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*)\b/i.test(c) || BAD_AI.test(c)) return 0;
+  if (/\b(spam\w*|promotional|puffery|disruptive|unconstructive|non-?constructive)\b/i.test(c)) return 1;
+  return 2;
+}
 
-// Edits from Wikipedia's recent-changes feed (last 60 days), well-known articles first.
-function refill(kind) {
-  if (refilling[kind]) return refilling[kind];
-  refilling[kind] = (async () => {
+const queues = { funny: [], fix: [] };
+let refilling = null;
+
+// Edits from Wikipedia's recent-changes feed (last 60 days), sorted funniest and best-known first.
+function refill() {
+  if (refilling) return refilling;
+  refilling = (async () => {
     const popular = new Set(await getPool());
-    const recent = (extra) => api({
+    const recent = () => api({
       action: "query", list: "recentchanges", rcnamespace: "0", rctype: "edit", rclimit: "500", rcdir: "older",
-      rcprop: "ids|title|comment|tags", rcstart: new Date(Date.now() - Math.random() * 60 * 86400000).toISOString(), ...extra
+      rcprop: "ids|title|comment", rcshow: "!bot", rcstart: new Date(Date.now() - Math.random() * 60 * 86400000).toISOString()
     }).then((d) => d.query.recentchanges).catch(() => []);
-    const lists = kind === "revert"
-      ? await Promise.all([...REVERT_TAGS.map((t) => recent({ rctag: t })), recent({ rcshow: "!bot" }), recent({ rcshow: "!bot" })])
-      : await Promise.all([1, 2, 3].map(() => recent({ rcshow: "!bot" })));
+    const lists = await Promise.all([1, 2, 3, 4, 5, 6].map(recent));
     const seen = new Set();
-    const all = [];
+    const found = { funny: [], fix: [] };
     lists.flat().forEach((c) => {
       if (!c.old_revid || seen.has(c.revid) || SUS.test(c.title)) return;
       const comment = c.comment || "";
-      const isRevert = (c.tags || []).some((t) => REVERT_TAGS.includes(t));
-      const fits = kind === "revert" ? isRevert || isBadNote(comment) : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
-      if (!fits) return;
+      const kind = noteKind(comment);
+      if (!kind) return;
       seen.add(c.revid);
-      all.push({ title: c.title, revid: c.revid, old_revid: c.old_revid, comment: comment });
+      found[kind].push({ title: c.title, revid: c.revid, old_revid: c.old_revid, comment: comment });
     });
-    all.sort(() => Math.random() - 0.5);
-    queues[kind].push(...all.filter((c) => popular.has(c.title)), ...all.filter((c) => !popular.has(c.title)));
-  })().finally(() => { refilling[kind] = null; });
-  return refilling[kind];
+    for (const kind of ["funny", "fix"]) {
+      found[kind].sort((a, b) =>
+        (kind === "funny" ? funTier(a.comment) - funTier(b.comment) : 0) ||
+        (popular.has(b.title) - popular.has(a.title)) || Math.random() - 0.5);
+      queues[kind].push(...found[kind]);
+    }
+  })().finally(() => { refilling = null; });
+  return refilling;
 }
 
 // Turn wiki code into plain readable text.
@@ -367,38 +379,29 @@ function wikiUrl(title) {
   return "https://en.wikipedia.org/wiki/" + encodeURIComponent(title.replace(/ /g, "_"));
 }
 
-// Older edits: scan one article's history from a random moment. Reverts are edits tagged as
-// reverts, or edits that restored an exact earlier copy of the page.
+// Older edits: scan one article's history from a random moment and keep edits whose note fits.
 async function findOldEdits(title, kind) {
   const data = await api({
     action: "query", prop: "revisions", titles: title,
-    rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|tags|comment|sha1"
+    rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|comment"
   });
-  const revs = data.query.pages[0].revisions || [];
-  const seen = new Map();
-  const found = [];
-  revs.forEach((r, i) => {
-    const tagged = r.tags && r.tags.some((t) => REVERT_TAGS.includes(t));
-    const earlier = r.sha1 ? seen.get(r.sha1) : undefined;
-    const isRevert = tagged || (earlier !== undefined && earlier < i - 1);
-    const comment = r.comment || "";
-    const fits = kind === "revert" ? isRevert || isBadNote(comment) : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
-    if (r.parentid && fits) found.push({ title: title, revid: r.revid, old_revid: r.parentid, comment: comment });
-    if (r.sha1) seen.set(r.sha1, i);
-  });
-  return found.sort(() => Math.random() - 0.5).slice(0, 5);
+  const found = (data.query.pages[0].revisions || [])
+    .filter((r) => r.parentid && noteKind(r.comment || "") === kind)
+    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, comment: r.comment || "" }))
+    .sort(() => Math.random() - 0.5);
+  if (kind === "funny") found.sort((a, b) => funTier(a.comment) - funTier(b.comment));
+  return found.slice(0, 5);
 }
 
-// One round: the older sentence is the mistake and the newer one is the fix.
+// One round: the older sentence is the mistake and the newer one is the fix. Mostly the funny kind.
 async function makeRound(m) {
-  const kind = started && Math.random() < 0.4 ? "revert" : "fix";
-  const fix = kind === "fix";
+  const kind = Math.random() < 0.85 ? "funny" : "fix";
   let candidates;
   if (Math.random() < 0.3) {
     const title = await pickTitle(0.9);
     candidates = SUS.test(title) ? [] : await findOldEdits(title, kind);
   } else {
-    if (queues[kind].length === 0) await refill(kind);
+    if (queues[kind].length === 0) await refill();
     candidates = [queues[kind].shift()];
   }
   for (const rc of candidates) {
@@ -408,7 +411,7 @@ async function makeRound(m) {
     const note = cleanComment(rc.comment || "");
     return {
       title: rc.title,
-      summary: note ? (fix ? "Note from the editor who made the change: " : "Note from the editor who undid it: ") : "The editor left no note.",
+      summary: note ? "Note from the editor who made the change: " : "The editor left no note.",
       note: note,
       diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(rc.title.replace(/ /g, "_")) +
         "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
@@ -454,7 +457,6 @@ function prefetch() {
 
 function show(round) {
   current = round;
-  started = true;
   $("articleLink").textContent = round.title;
   $("articleLink").href = wikiUrl(round.title);
   round.options.forEach((opt, i) => {
