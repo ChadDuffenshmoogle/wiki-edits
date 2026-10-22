@@ -47,8 +47,7 @@
   .status { font-family: system-ui, sans-serif; color: var(--muted); padding: 30px 0; }
   .hidden { display: none; }
   .choice mark { color: inherit; border-radius: 3px; padding: 0 1px; }
-  #c0 mark { background: rgba(214, 69, 60, 0.18); }
-  #c1 mark { background: rgba(46, 160, 87, 0.2); }
+  .choice mark { background: rgba(240, 180, 40, 0.38); }
   .modes { display: flex; gap: 8px; margin-bottom: 14px; }
   .mode { font: 0.9rem system-ui, sans-serif; color: var(--ink); background: var(--card); border: 1px solid var(--line);
           border-radius: 6px; padding: 6px 14px; cursor: pointer; }
@@ -59,7 +58,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v9</div>
+<div class="ver">v10</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">Someone changed a sentence on Wikipedia, then someone changed it back. Which version is on the page today?</p>
@@ -106,11 +105,17 @@ const $ = (id) => document.getElementById(id);
 
 async function api(params) {
   const url = API + "?" + new URLSearchParams({ ...params, format: "json", formatversion: "2", origin: "*" });
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Wikipedia answered with status " + res.status);
-  const data = await res.json();
-  if (data.error) throw new Error("Wikipedia said: " + data.error.info);
-  return data;
+  for (let tries = 0; ; tries++) {
+    const res = await fetch(url);
+    if (res.status === 429 && tries < 3) {
+      await new Promise((r) => setTimeout(r, 1500 * 2 ** tries));
+      continue;
+    }
+    if (!res.ok) throw new Error("Wikipedia answered with status " + res.status);
+    const data = await res.json();
+    if (data.error) throw new Error("Wikipedia said: " + data.error.info);
+    return data;
+  }
 }
 
 // Well-known articles: last month's most-viewed pages, asked from Wikipedia (nothing is hardcoded).
@@ -183,10 +188,13 @@ async function getText(params) {
 
 // Turn wiki code into plain readable text.
 function clean(line) {
-  return line
+  let t = line
+    .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<ref[^>]*\/>/g, "")
     .replace(/<ref[^>]*>[\s\S]*?<\/ref>/g, "")
-    .replace(/\{\{[^{}]*\}\}/g, "")
+    .replace(/&nbsp;/g, " ");
+  while (/\{\{[^{}]*\}\}/.test(t)) t = t.replace(/\{\{[^{}]*\}\}/g, "");
+  return t
     .replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, "$1")
     .replace(/'{2,}/g, "")
     .replace(/<[^>]+>/g, "")
@@ -233,6 +241,19 @@ function renderParts(el, parts) {
   });
 }
 
+// Keep only ordinary sentences: no tables, lists, captions, file names, references or code.
+function isPlain(raw, text) {
+  if (/^[|{}!*#:;=<-]/.test(raw)) return false;
+  if (/\[\[(File|Image|Category|Media):/i.test(raw)) return false;
+  if (text.length < 50 || text.length >= 500) return false;
+  if (/[|{}<>\[\]=]|http|www\.|&[a-z#0-9]+;/i.test(text)) return false;
+  if (/\.(jpe?g|png|gif|svg|webp|pdf|ogg|mp3|tiff?)\b/i.test(text)) return false;
+  if (!/^["“'(]?[A-Z0-9]/.test(text)) return false;
+  if (!/[.!?]["”'’)]*$/.test(text)) return false;
+  const letters = (text.match(/[A-Za-z]/g) || []).length;
+  return letters / text.length >= 0.7;
+}
+
 // Ask Wikipedia for just the changed lines (small), instead of downloading two whole articles.
 async function diffPair(params) {
   const data = await api({ action: "compare", prop: "diff|timestamp", ...params });
@@ -246,7 +267,10 @@ async function diffPair(params) {
   rows.sort(() => Math.random() - 0.5);
   for (const [r, a] of rows) {
     const cr = clean(r), ca = clean(a);
-    if (r.length > 30 && a.length > 30 && cr && ca && cr !== ca && cr.length < 500 && ca.length < 500 && similarity(cr, ca) > 0.5) {
+    if (cr === ca || !isPlain(r, cr) || !isPlain(a, ca) || similarity(cr, ca) <= 0.35) continue;
+    const [pa, pb] = diffWords(cr, ca);
+    const changed = (pa.filter((w) => w.d).length + pb.filter((w) => w.d).length) / (pa.length + pb.length);
+    if (changed >= 0.3) {
       return { rawA: r, rawB: a, textA: cr, textB: ca, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
     }
   }
@@ -280,10 +304,11 @@ function wikiUrl(title) {
 async function makeRevertRound() {
   const title = await pickTitle(0.9);
   const found = (await findReverts(title)).slice(0, 4);
+  let current = null;
   for (const rc of found) {
     const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) });
     if (!pair) continue;
-    const current = (await getText({ titles: title })).flat()[0] || "";
+    if (current === null) current = (await getText({ titles: title })).flat()[0] || "";
     const revertedAlive = current.includes(pair.rawA);
     const restoredAlive = current.includes(pair.rawB);
     if (revertedAlive === restoredAlive) continue; // need exactly one survivor
@@ -317,7 +342,7 @@ async function makeOldRound() {
   const [partsA, partsB] = diffWords(pair.textA, pair.textB);
   return {
     title: title,
-    summary: "The older version is from " + niceTime(rev.timestamp) + ".",
+    summary: "",
     diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
       "&diff=cur&oldid=" + rev.revid,
     options: [
@@ -327,11 +352,11 @@ async function makeOldRound() {
   };
 }
 
-// Try three articles at the same time and keep the first good result.
+// Try two articles at the same time and keep the first good result.
 async function buildRound(m) {
   let lastError = null, done = false;
   const worker = async () => {
-    for (let n = 0; n < 12 && !done; n++) {
+    for (let n = 0; n < 15 && !done; n++) {
       try {
         const round = m === "old" ? await makeOldRound() : await makeRevertRound();
         if (round) return round;
@@ -343,7 +368,7 @@ async function buildRound(m) {
     throw new Error("no match");
   };
   try {
-    return await Promise.any([worker(), worker(), worker()]);
+    return await Promise.any([worker(), worker()]);
   } catch (e) {
     throw new Error("Could not find a good pair (" + (lastError ? lastError.message : "no matches") + ")");
   } finally {
@@ -391,6 +416,7 @@ function guess(i) {
   $("verdict").textContent = correct ? "You got it." : "Not this time.";
   $("verdict").className = "verdict " + (correct ? "good" : "bad");
   $("summary").textContent = current.summary;
+  $("summary").classList.toggle("hidden", !current.summary);
   if (current.note) {
     const bold = document.createElement("strong");
     bold.textContent = current.note;
