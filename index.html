@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v26</div>
+<div class="ver">v27</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -508,7 +508,7 @@ async function makeRound(rand, isDaily, avoid) {
   if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title))) return null;
   if (!isDaily) syncSeen();
   const edits = await findFunnyEdits(title, rand);
-  if (edits.length === 0 || !(await isSafeArticle(title))) return null;
+  if (edits.length === 0) return null;
   for (const rc of edits) {
     if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
     const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
@@ -516,6 +516,7 @@ async function makeRound(rand, isDaily, avoid) {
     if ([...pair.partsA, ...pair.partsB].some((w) => w.d && GENDER.test(w.t.replace(/\W/g, "")))) continue;
     const key = textKey(pair.textA, pair.textB);
     if (!isDaily && seen.has(key)) continue;
+    if (!(await isSafeArticle(title))) return null;
     return {
       revid: rc.revid,
       key: key,
@@ -534,7 +535,7 @@ async function makeRound(rand, isDaily, avoid) {
   return null;
 }
 
-// Endless mode: try two articles at the same time and keep the first good result.
+// Endless mode: try four articles at the same time and keep the first good result.
 async function buildRound() {
   let lastError = null, done = false;
   const worker = async () => {
@@ -550,7 +551,7 @@ async function buildRound() {
     throw new Error("no match");
   };
   try {
-    return await Promise.any([worker(), worker()]);
+    return await Promise.any(Array.from({ length: 4 }, () => worker()));
   } catch (e) {
     throw new Error("Could not find a good pair (" + (lastError ? lastError.message : "no matches") + ")");
   } finally {
@@ -576,8 +577,8 @@ async function tryDailyAttempt(k, i, avoid) {
 
 async function buildDaily(k, avoid) {
   await getDailyPool();
-  for (let i = 0; i < 90; i += 3) {
-    const batch = await Promise.all([i, i + 1, i + 2].map((n) => tryDailyAttempt(k, n, avoid)));
+  for (let i = 0; i < 90; i += 6) {
+    const batch = await Promise.all(Array.from({ length: 6 }, (_, j) => tryDailyAttempt(k, i + j, avoid)));
     const hit = batch.find(Boolean);
     if (hit) return hit;
   }
