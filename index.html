@@ -26,6 +26,7 @@
   .bar b { color: var(--ink); }
   .article { font-family: system-ui, sans-serif; font-size: 0.95rem; margin-bottom: 10px; }
   .article a { color: var(--accent); }
+  .prompt { font: 600 1.05rem system-ui, sans-serif; margin: 0 0 10px; }
   .choices { display: grid; gap: 12px; }
   .choice { text-align: left; font: inherit; color: inherit; border: 2px solid var(--line); background: var(--card);
             border-radius: 6px; padding: 14px 16px; cursor: pointer; width: 100%; }
@@ -58,10 +59,10 @@
 </style>
 </head>
 <body>
-<div class="ver">v14</div>
+<div class="ver">v15</div>
 <main>
   <h1>Wiki Edit War</h1>
-  <p class="sub" id="sub">Two versions of one Wikipedia sentence. Other editors undid one of them. Which one?</p>
+  <p class="sub" id="sub">Two versions of one Wikipedia sentence. Answer the question above them.</p>
 
   <div class="modes">
     <button class="mode on" id="mEasy">Easy (obvious changes)</button>
@@ -78,6 +79,7 @@
 
   <section id="game" class="hidden">
     <div class="article">Article: <a id="articleLink" target="_blank" rel="noopener"></a></div>
+    <p class="prompt" id="prompt"></p>
     <div class="choices">
       <button class="choice" id="c0"><span class="tag">Version 1</span><span class="text"></span></button>
       <button class="choice" id="c1"><span class="tag">Version 2</span><span class="text"></span></button>
@@ -101,7 +103,7 @@ let mode = "easy";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
 // Share of words that must differ between the two sentences (easy = big change, hard = small change).
-const CHANGE_RANGE = { easy: [0.3, 1.01], hard: [0.1, 0.3] };
+const CHANGE_RANGE = { revert: { easy: [0.3, 1.01], hard: [0.1, 0.3] }, fix: { easy: [0.06, 1.01], hard: [0.02, 0.06] } };
 let score = 0, played = 0, streak = 0;
 let current = null;
 
@@ -167,27 +169,41 @@ function randomTime() {
   return new Date(first + Math.random() * (Date.now() - first)).toISOString();
 }
 
-// Recent reverts straight from Wikipedia's recent-changes feed, well-known articles first.
-let revertQueue = [], refilling = null;
-function refillReverts() {
-  if (refilling) return refilling;
-  refilling = (async () => {
+// Two kinds of edits: "revert" = an edit that other editors undid, "fix" = an edit whose own
+// note says it fixed typos, grammar, spelling and so on. Both give a fair right answer.
+const REVERT_TAGS = ["mw-manual-revert", "mw-undo", "mw-rollback"];
+const FIX_NOTE = /\b(typos?|grammar|grammatical|spelling|misspell\w*|copy-?\s?edit\w*|punctuation|proofread\w*|capitali[sz]ation|wording|rephras\w*|reword\w*)\b/i;
+const REVERT_NOTE = /revert|undid|undo/i;
+const queues = { revert: [], fix: [] };
+const refilling = {};
+
+// Edits from Wikipedia's recent-changes feed (last 60 days), well-known articles first.
+function refill(kind) {
+  if (refilling[kind]) return refilling[kind];
+  refilling[kind] = (async () => {
     const popular = new Set(await getPool());
-    const start = new Date(Date.now() - Math.random() * 60 * 86400000).toISOString();
-    const tags = ["mw-manual-revert", "mw-undo", "mw-rollback"];
-    const lists = await Promise.all(tags.map((t) =>
-      api({ action: "query", list: "recentchanges", rctag: t, rcnamespace: "0", rctype: "edit",
-        rclimit: "500", rcstart: start, rcdir: "older", rcprop: "ids|title|comment" })
-        .then((d) => d.query.recentchanges).catch(() => [])));
+    const recent = (extra) => api({
+      action: "query", list: "recentchanges", rcnamespace: "0", rctype: "edit", rclimit: "500", rcdir: "older",
+      rcprop: "ids|title|comment|tags", rcstart: new Date(Date.now() - Math.random() * 60 * 86400000).toISOString(), ...extra
+    }).then((d) => d.query.recentchanges).catch(() => []);
+    const lists = kind === "revert"
+      ? await Promise.all(REVERT_TAGS.map((t) => recent({ rctag: t })))
+      : await Promise.all([1, 2, 3].map(() => recent({ rcshow: "!bot" })));
     const seen = new Set();
     const all = [];
     lists.flat().forEach((c) => {
-      if (c.old_revid && !seen.has(c.revid) && !SUS.test(c.title)) { seen.add(c.revid); all.push(c); }
+      if (!c.old_revid || seen.has(c.revid) || SUS.test(c.title)) return;
+      const comment = c.comment || "";
+      const isRevert = (c.tags || []).some((t) => REVERT_TAGS.includes(t));
+      const fits = kind === "revert" ? isRevert : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
+      if (!fits) return;
+      seen.add(c.revid);
+      all.push({ title: c.title, revid: c.revid, old_revid: c.old_revid, comment: comment });
     });
     all.sort(() => Math.random() - 0.5);
-    revertQueue.push(...all.filter((c) => popular.has(c.title)), ...all.filter((c) => !popular.has(c.title)));
-  })().finally(() => { refilling = null; });
-  return refilling;
+    queues[kind].push(...all.filter((c) => popular.has(c.title)), ...all.filter((c) => !popular.has(c.title)));
+  })().finally(() => { refilling[kind] = null; });
+  return refilling[kind];
 }
 
 // Turn wiki code into plain readable text.
@@ -337,10 +353,9 @@ function wikiUrl(title) {
   return "https://en.wikipedia.org/wiki/" + encodeURIComponent(title.replace(/ /g, "_"));
 }
 
-// Older reverts: scan one article's history from a random moment (edits tagged as reverts,
-// or edits that restored an exact earlier copy of the page).
-async function findOldReverts(title) {
-  const tags = ["mw-manual-revert", "mw-undo", "mw-rollback"];
+// Older edits: scan one article's history from a random moment. Reverts are edits tagged as
+// reverts, or edits that restored an exact earlier copy of the page.
+async function findOldEdits(title, kind) {
   const data = await api({
     action: "query", prop: "revisions", titles: title,
     rvlimit: "500", rvdir: "newer", rvstart: randomTime(), rvprop: "ids|tags|comment|sha1"
@@ -349,40 +364,44 @@ async function findOldReverts(title) {
   const seen = new Map();
   const found = [];
   revs.forEach((r, i) => {
-    const tagged = r.tags && r.tags.some((t) => tags.includes(t));
+    const tagged = r.tags && r.tags.some((t) => REVERT_TAGS.includes(t));
     const earlier = r.sha1 ? seen.get(r.sha1) : undefined;
-    if (r.parentid && (tagged || (earlier !== undefined && earlier < i - 1))) {
-      found.push({ title: title, revid: r.revid, old_revid: r.parentid, comment: r.comment || "" });
-    }
+    const isRevert = tagged || (earlier !== undefined && earlier < i - 1);
+    const comment = r.comment || "";
+    const fits = kind === "revert" ? isRevert : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
+    if (r.parentid && fits) found.push({ title: title, revid: r.revid, old_revid: r.parentid, comment: comment });
     if (r.sha1) seen.set(r.sha1, i);
   });
   return found.sort(() => Math.random() - 0.5).slice(0, 5);
 }
 
-// One round: a sentence that was edited, then undone. The answer is the undone version.
+// One round. Revert rounds: pick the version editors undid. Fix rounds: pick the corrected version.
 async function makeRound(m) {
+  const kind = Math.random() < 0.5 ? "revert" : "fix";
+  const fix = kind === "fix";
   let candidates;
   if (Math.random() < 0.3) {
     const title = await pickTitle(0.9);
-    candidates = SUS.test(title) ? [] : await findOldReverts(title);
+    candidates = SUS.test(title) ? [] : await findOldEdits(title, kind);
   } else {
-    if (revertQueue.length === 0) await refillReverts();
-    candidates = [revertQueue.shift()];
+    if (queues[kind].length === 0) await refill(kind);
+    candidates = [queues[kind].shift()];
   }
   for (const rc of candidates) {
     if (!rc) continue;
-    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, CHANGE_RANGE[m]);
+    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, CHANGE_RANGE[kind][m]);
     if (!pair) continue;
     const note = cleanComment(rc.comment || "");
     return {
       title: rc.title,
-      summary: note ? "Note from the editor who undid it: " : "The editor left no note.",
+      question: fix ? "Which version is the corrected one?" : "Which version did other editors undo?",
+      summary: note ? (fix ? "Note from the editor who made the change: " : "Note from the editor who undid it: ") : "The editor left no note.",
       note: note,
       diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(rc.title.replace(/ /g, "_")) +
         "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
       options: [
-        { text: pair.textA, parts: pair.partsA, undone: true, note: "this one was undone", when: niceTime(pair.timeA) },
-        { text: pair.textB, parts: pair.partsB, undone: false, note: "this one was kept", when: niceTime(pair.timeB) }
+        { text: pair.textA, parts: pair.partsA, answer: !fix, good: false, note: fix ? "before the fix" : "this one was undone", when: niceTime(pair.timeA) },
+        { text: pair.textB, parts: pair.partsB, answer: fix, good: true, note: fix ? "after the fix" : "this one was kept", when: niceTime(pair.timeB) }
       ].sort(() => Math.random() - 0.5)
     };
   }
@@ -423,6 +442,7 @@ function prefetch() {
 function show(round) {
   current = round;
   $("articleLink").textContent = round.title;
+  $("prompt").textContent = round.question;
   $("articleLink").href = wikiUrl(round.title);
   round.options.forEach((opt, i) => {
     const btn = $("c" + i);
@@ -438,13 +458,13 @@ function show(round) {
 
 function guess(i) {
   const opts = current.options;
-  const correct = opts[i].undone;
+  const correct = opts[i].answer;
   played++;
   if (correct) { score++; streak++; } else { streak = 0; }
   opts.forEach((opt, k) => {
     const btn = $("c" + k);
     btn.disabled = true;
-    btn.classList.add(opt.undone ? "lost" : "survived");
+    btn.classList.add(opt.good ? "survived" : "lost");
     if (k === i) btn.classList.add("picked");
     btn.querySelector(".tag").textContent =
       "Version " + (k + 1) + " - " + opt.note + (opt.when ? " - " + opt.when : "");
