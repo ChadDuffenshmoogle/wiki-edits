@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v22</div>
+<div class="ver">v23</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -124,6 +124,11 @@ let prefetched = null, ticket = 0;
 let region = "US";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
+// Skip profanity, slurs and crude insults in article titles and sentences.
+const BAD_TEXT = /\b(fuck\w*|shit\w*|bullshit|bitch\w*|cunt\w*|dick\w*|cock\w*|pussy|asshole\w*|arse\w*|bastard\w*|piss\w*|crap\w*|damn\w*|bollocks|wank\w*|twat|slut\w*|whore\w*|bimbo\w*|topless|retard\w*|spastic|moron\w*|idiot\w*|stupid|nigg\w*|negro\w*|coon|chink\w*|gook|spic|wetback|kike|fag|fags|faggot\w*|dyke|tranny|shemale|paki|raghead|towelhead|honky|poop\w*|fart\w*|boob\w*|tits?|butt)\b/i;
+// Skip edits whose note is about hate or bigotry (racism, sexism and the other -isms).
+const BAD_NOTE = /\b(racis\w*|racial\w*|sexis\w*|ableis\w*|ageis\w*|homophob\w*|transphob\w*|biphob\w*|islamophob\w*|antisemit\w*|anti-semit\w*|xenophob\w*|misogyn\w*|misandr\w*|bigot\w*|supremac\w*|nazi\w*|hitler|slurs?|hate|hateful|hate speech|offensive|derogatory|pejorative|discriminat\w*|n-word|f-word|epithets?|abusive|harass\w*|profan\w*|obscen\w*|swear\w*|vulgar\w*|explicit|lewd|crude)\b/i;
+
 // Share of words that must differ between the two sentences.
 const MIN_CHANGE = 0.15;
 let score = 0, played = 0, streak = 0;
@@ -210,7 +215,7 @@ async function loadPool(country, strict, backs) {
   const counts = new Map();
   lists.forEach((list) => list.forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
   let titles = [...counts.keys()].filter((t) =>
-    t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t));
+    t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t) && !BAD_TEXT.test(t));
   const steady = titles.filter((t) => counts.get(t) >= 2);
   if (steady.length >= 80) titles = steady;
   if (titles.length === 0 && strict) throw new Error("No popular articles found");
@@ -287,6 +292,7 @@ const FUNNY_AMBIGUOUS = /\b(jokes?|prank|silly|puerile|juvenile|childish|fake|in
 const FUNNY_AI = /\b(?:AI|A\.I\.)(?!\w)/;
 const NOTE_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|strip\w*|purg\w*|fix\w*|rewrit\w*|cut|trim\w*|restor\w*|per)\b/i;
 function isFunnyNote(c) {
+  if (BAD_NOTE.test(c) || BAD_TEXT.test(c)) return false;
   if (FUNNY_STRONG.test(c)) return true;
   return (FUNNY_AI_WORDS.test(c) || FUNNY_AI.test(c) || FUNNY_AMBIGUOUS.test(c)) && NOTE_ACTION.test(c);
 }
@@ -353,7 +359,7 @@ function renderParts(el, parts) {
 // Keep only ordinary sentences: no adult topics, captions, file names, references or code.
 function isPlain(text) {
   if (text.length < 50 || text.length >= 500) return false;
-  if (SUS.test(text)) return false;
+  if (SUS.test(text) || BAD_TEXT.test(text)) return false;
   if (/[|{}<>\[\]=]|http|www\.|&[a-z#0-9]+;/i.test(text)) return false;
   if (/\.(jpe?g|png|gif|svg|webp|pdf|ogg|mp3|tiff?)\b/i.test(text)) return false;
   if (!/^["“'(]?[A-Z0-9]/.test(text)) return false;
@@ -474,7 +480,7 @@ async function makeRound(rand, isDaily, avoid) {
   } else {
     title = await pickTitle(0.95, rand);
   }
-  if (SUS.test(title) || (avoid && avoid.includes(title))) return null;
+  if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title))) return null;
   if (!isDaily) syncSeen();
   for (const rc of await findFunnyEdits(title, rand)) {
     if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
@@ -570,8 +576,8 @@ function dailyScore() { return daily.results.reduce((a, b) => a + b, 0); }
 // Text to paste into Discord (Discord markdown).
 function shareText() {
   const squares = daily.results.map((r) => (r ? "🟩" : "🟥")).join("");
-  return "**Wiki Edit War - Daily #" + dailyNumber + "** (" + daily.key + ")\n" +
-    squares + " **" + dailyScore() + "/" + DAILY_COUNT + "**\n" + SHARE_URL;
+  return "**[Wiki Edit War - Daily #" + dailyNumber + "](" + SHARE_URL + ")** (" + daily.key + ")\n" +
+    squares + " **" + dailyScore() + "/" + DAILY_COUNT + "**";
 }
 
 async function copyText(text, btn) {
