@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v33</div>
+<div class="ver">v35</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -507,7 +507,7 @@ async function findFunnyEdits(title, rand) {
     const k = keywordOf(r.note);
     wikiDebug.found[k] = (wikiDebug.found[k] || 0) + 1;
   });
-  return shuffle(found, rand).sort((a, b) => funTier(a.note) - funTier(b.note)).slice(0, 5);
+  return shuffle(found, rand).sort((a, b) => funTier(a.note) - funTier(b.note)).slice(0, 12);
 }
 
 // The article's main picture, if it has one.
@@ -544,9 +544,48 @@ async function isSafeArticle(title) {
   return safe;
 }
 
+// Edits found earlier but not used yet (endless only), so Wikipedia has to be searched less often.
+const spare = [];
+
+// Turn one edit with a funny note into a question. Gives null if this edit is not usable,
+// or false if the whole article is off limits.
+async function roundFromEdit(title, rc, rand, isDaily) {
+  if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) return null;
+  const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
+  if (!pair) { wikiDebug.noPair++; return null; }
+  const flagged = [...pair.partsA, ...pair.partsB].some((w) =>
+    w.d && w.t.split(/[^A-Za-z]+/).some((x) => GENDER.test(x) || BAD_CHANGED.test(x) || PROFANE_PART.test(x)));
+  if (flagged) return null;
+  const key = textKey(pair.textA, pair.textB);
+  if (!isDaily && seen.has(key)) { wikiDebug.repeats++; return null; }
+  if (!(await isSafeArticle(title))) { wikiDebug.unsafe++; return false; }
+  const keyword = keywordOf(rc.note);
+  wikiDebug.shown[keyword] = (wikiDebug.shown[keyword] || 0) + 1;
+  console.info("[wiki] found:", title, "| keyword:", keyword, "| note:", rc.note);
+  return {
+    revid: rc.revid,
+    key: key,
+    title: title,
+    image: await getImage(title),
+    summary: "Note from the editor who made the change: ",
+    note: rc.note,
+    diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
+      "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
+    options: shuffle([
+      { text: pair.textA, parts: pair.partsA, answer: false, when: niceTime(pair.timeA) },
+      { text: pair.textB, parts: pair.partsB, answer: true, when: niceTime(pair.timeB) }
+    ], rand)
+  };
+}
+
 // One round: the older sentence is the mistake and the newer one is the fix.
 // Endless rounds skip edits this browser has already shown. Daily rounds only use the seeded random numbers.
 async function makeRound(rand, isDaily, avoid) {
+  if (!isDaily && spare.length > 0) {
+    const item = spare.splice(Math.floor(Math.random() * spare.length), 1)[0];
+    syncSeen();
+    return (await roundFromEdit(item.title, item.rc, rand, false)) || null;
+  }
   let title;
   if (isDaily) {
     const pool = await getDailyPool();
@@ -559,33 +598,13 @@ async function makeRound(rand, isDaily, avoid) {
   if (!isDaily) syncSeen();
   const edits = await findFunnyEdits(title, rand);
   if (edits.length === 0) { wikiDebug.noEdits++; return null; }
-  for (const rc of edits) {
-    if (!isDaily && (seen.has(rc.revid) || (current && current.revid === rc.revid))) continue;
-    const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
-    if (!pair) { wikiDebug.noPair++; continue; }
-    const flagged = [...pair.partsA, ...pair.partsB].some((w) =>
-      w.d && w.t.split(/[^A-Za-z]+/).some((x) => GENDER.test(x) || BAD_CHANGED.test(x) || PROFANE_PART.test(x)));
-    if (flagged) continue;
-    const key = textKey(pair.textA, pair.textB);
-    if (!isDaily && seen.has(key)) { wikiDebug.repeats++; continue; }
-    if (!(await isSafeArticle(title))) { wikiDebug.unsafe++; return null; }
-    const keyword = keywordOf(rc.note);
-    wikiDebug.shown[keyword] = (wikiDebug.shown[keyword] || 0) + 1;
-    console.info("[wiki] found:", title, "| keyword:", keyword, "| note:", rc.note);
-    return {
-      revid: rc.revid,
-      key: key,
-      title: title,
-      image: await getImage(title),
-      summary: "Note from the editor who made the change: ",
-      note: rc.note,
-      diffUrl: "https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) +
-        "&diff=" + rc.revid + "&oldid=" + rc.old_revid,
-      options: shuffle([
-        { text: pair.textA, parts: pair.partsA, answer: false, when: niceTime(pair.timeA) },
-        { text: pair.textB, parts: pair.partsB, answer: true, when: niceTime(pair.timeB) }
-      ], rand)
-    };
+  for (let i = 0; i < edits.length; i++) {
+    const round = await roundFromEdit(title, edits[i], rand, isDaily);
+    if (round === false) return null;
+    if (round) {
+      if (!isDaily) edits.slice(i + 1).forEach((rc) => { if (spare.length < 40) spare.push({ title: title, rc: rc }); });
+      return round;
+    }
   }
   return null;
 }
