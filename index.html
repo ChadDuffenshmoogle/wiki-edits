@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v36</div>
+<div class="ver">v37</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -125,12 +125,12 @@ let region = "US";
 // Skip adult or explicit topics (checked on article titles and sentences).
 const SUS = /\b(sex|porn|erot|nude|nudity|naked|fetish|bdsm|bondage|genital|penis|vagin|vulva|anal|orgasm|masturbat|prostitut|escort|rape[sd]?|rapist|incest|molest|slut|whore|dildo|lingerie|stripper|strip club|hentai|playboy|onlyfans|xxx|kinky?|intercourse|nipple|testic|scrot|pedoph|paedoph|sperm|semen|clitor|erection|69)\b|\b(sex|porn|erot|genital|vagin|masturbat|prostitut|pedoph|paedoph)/i;
 // Skip profanity, slurs and crude insults in article titles and sentences.
-const BAD_TEXT = /\b(fuck\w*|shit\w*|bullshit|bitch\w*|cunt\w*|dick\w*|cock\w*|pussy|asshole\w*|arse\w*|bastard\w*|piss\w*|crap\w*|damn\w*|bollocks|wank\w*|twat|slut\w*|whore\w*|bimbo\w*|topless|retard\w*|spastic|moron\w*|idiot\w*|stupid|nigg\w*|negro\w*|coon|chink\w*|gook|spic|wetback|kike|fag|fags|faggot\w*|dyke|tranny|shemale|paki|raghead|towelhead|honky|poop\w*|fart\w*|boob\w*|tits?|butt|gay|gays|lesbian\w*|homosexual\w*|nationalist\w*|supremac\w*|nazi\w*|fascis\w*|racis\w*|sexis\w*|assassinat\w*|murder\w*|kill\w*|shot|shoot\w*|massacre\w*|genocide\w*|holocaust|terror\w*|bomb\w*|suicid\w*|died|dies|death|deaths|dead|fatal\w*|victims?|funeral\w*|tragedy|tragic|disaster|crash\w*|war crimes?|execut\w*|stabb\w*|lynch\w*|abus\w*|kidnap\w*|hostages?|manslaughter|overdos\w*|casualt\w*|brothel\w*|hooker\w*|pimp\w*|harlot\w*|sexual\w*|sexy|horny|boner|lust\w*|aroused|arousal|molest\w*|semen|orgy|fetish\w*|jackass\w*|dumbass\w*|badass\w*|smartass\w*|fatass\w*|kickass|asswipe|ass|asses|motherfuck\w*)\b/i;
+const BAD_TEXT = /\b(fuck\w*|shit\w*|bullshit|bitch\w*|cunt\w*|dick\w*|cock\w*|pussy|asshole\w*|arse\w*|bastard\w*|piss\w*|crap\w*|damn\w*|bollocks|wank\w*|twat|slut\w*|whore\w*|bimbo\w*|topless|retard\w*|spastic|moron\w*|idiot\w*|stupid|nigg\w*|negro\w*|coon|chink\w*|gook|spic|wetback|kike|fag|fags|faggot\w*|dyke|tranny|shemale|paki|raghead|towelhead|honky|poop\w*|fart\w*|boob\w*|tits?|butt|gay|gays|lesbian\w*|homosexual\w*|nationalist\w*|supremac\w*|nazi\w*|fascis\w*|racis\w*|sexis\w*|assassinat\w*|murder\w*|kill\w*|shot|shoot\w*|massacre\w*|genocide\w*|holocaust|terror\w*|bomb\w*|suicid\w*|died|dies|death|deaths|dead|fatal\w*|victims?|funeral\w*|tragedy|tragic|disaster|crash\w*|war crimes?|execut\w*|stabb\w*|lynch\w*|abus\w*|kidnap\w*|hostages?|manslaughter|overdos\w*|casualt\w*|brothel\w*|hooker\w*|pimp\w*|harlot\w*|sexual\w*|sexy|horny|boner|lust\w*|aroused|arousal|molest\w*|semen|orgy|fetish\w*|jackass\w*|dumbass\w*|badass\w*|smartass\w*|fatass\w*|kickass|asswipe|ass|asses|motherfuck\w*|handjob\w*|headjob\w*|blowjob\w*|rimjob\w*|jerk(?:ing)? off|masturbat\w*|orgasm\w*|ejaculat\w*|genital\w*|testicle\w*|scrotum|nutsack|ballsack|butthole\w*|schlong)\b/i;
 // Gender-swap vandalism: skip when a pronoun or gendered word is among the changed words.
 const GENDER = /^(he|she|his|her|hers|him|himself|herself|man|woman|men|women|male|female|boy|girl|mr|mrs|ms)$/i;
 // Words that must not appear among the changed words: race, religion and body jokes.
 // Profanity hiding inside a longer word (like "Motherfucker"); only checked on changed words.
-const PROFANE_PART = /(fuck|shit|cunt|nigg|bitch|cock|dick|pussy|whore|slut|bastard|wank|twat|jackass|dumbass|badass|smartass|asshole|arsehole|faggot|retard|porn|penis|vagina|dildo)/i;
+const PROFANE_PART = /(fuck|shit|cunt|nigg|bitch|cock|dick|pussy|whore|slut|bastard|wank|twat|jackass|dumbass|badass|smartass|asshole|arsehole|faggot|retard|porn|penis|vagina|dildo|handjob|headjob|blowjob|rimjob|masturbat|orgasm|ejaculat|genital|testicle|scrotum|nutsack|ballsack|butthole|schlong)/i;
 const BAD_CHANGED = /^(black|white|asian|jew\w*|arab\w*|mexican\w*|chinese|african\w*|hispanic|latino\w*|muslim\w*|islam\w*|inch|inches|huge|tiny|midget\w*|dwarf|fat|ugly|skinny|obese)$/i;
 // Skip edits whose note is about hate or bigotry (racism, sexism and the other -isms).
 const BAD_NOTE = /\b(racis\w*|racial\w*|sexis\w*|ableis\w*|ageis\w*|homophob\w*|transphob\w*|biphob\w*|islamophob\w*|antisemit\w*|anti-semit\w*|xenophob\w*|misogyn\w*|misandr\w*|bigot\w*|supremac\w*|nazi\w*|hitler|slurs?|hate|hateful|hate speech|offensive|derogatory|pejorative|discriminat\w*|n-word|f-word|epithets?|abusive|harass\w*|profan\w*|obscen\w*|swear\w*|vulgar\w*|explicit|lewd|crude)\b/i;
