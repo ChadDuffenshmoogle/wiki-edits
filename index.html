@@ -61,7 +61,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v16</div>
+<div class="ver">v17</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -173,11 +173,21 @@ function randomTime() {
   return new Date(first + Math.random() * (Date.now() - first)).toISOString();
 }
 
-// Two kinds of edits: "revert" = an edit that other editors undid, "fix" = an edit whose own
-// note says it fixed typos, grammar, spelling and so on. Both give a fair right answer.
+// Two kinds of edits: "revert" = bad content removed (a tagged revert, or a note about vandalism, AI text,
+// spam and so on), "fix" = an edit whose own note says it fixed typos, grammar, spelling and so on.
 const REVERT_TAGS = ["mw-manual-revert", "mw-undo", "mw-rollback"];
 const FIX_NOTE = /\b(typos?|grammar|grammatical|spelling|misspell\w*|copy-?\s?edit\w*|punctuation|proofread\w*|capitali[sz]ation|wording|rephras\w*|reword\w*)\b/i;
 const REVERT_NOTE = /revert|undid|undo/i;
+// Edit notes that say bad content was cleaned up (wording taken from Wikipedia's reverting, vandalism
+// and large-language-model pages). Words that also appear in normal edits (AI, spam, NPOV...) only count
+// next to a removal word like "removed" or "revert", so "added a section on AI" does not match.
+const BAD_STRONG = /\b(vandal\w*|rvv|gibberish|nonsense|test edits?|unconstructive|non-?constructive|hoax|trolling|copyvio)\b/i;
+const BAD_AMBIGUOUS = /\b(LLMs?|ChatGPT|GPT|chatbot|generative AI|gen-?AI|AI[- ]generated|AI slop|machine-generated|hallucinat\w*|spam\w*|promotional|puffery|unsourced|unverifiable|original research|NPOV|BLP|disruptive|WP:(?:NOLLM|LLM|NOR|V|RS))\b/i;
+const BAD_AI = /\b(?:AI|A\.I\.)(?!\w)/;
+const BAD_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|strip\w*|purg\w*|fix\w*|rewrit\w*|cut|trim\w*|restor\w*|per)\b/i;
+function isBadNote(c) {
+  return BAD_STRONG.test(c) || ((BAD_AMBIGUOUS.test(c) || BAD_AI.test(c)) && BAD_ACTION.test(c));
+}
 const queues = { revert: [], fix: [] };
 const refilling = {};
 
@@ -191,7 +201,7 @@ function refill(kind) {
       rcprop: "ids|title|comment|tags", rcstart: new Date(Date.now() - Math.random() * 60 * 86400000).toISOString(), ...extra
     }).then((d) => d.query.recentchanges).catch(() => []);
     const lists = kind === "revert"
-      ? await Promise.all(REVERT_TAGS.map((t) => recent({ rctag: t })))
+      ? await Promise.all([...REVERT_TAGS.map((t) => recent({ rctag: t })), recent({ rcshow: "!bot" }), recent({ rcshow: "!bot" })])
       : await Promise.all([1, 2, 3].map(() => recent({ rcshow: "!bot" })));
     const seen = new Set();
     const all = [];
@@ -199,7 +209,7 @@ function refill(kind) {
       if (!c.old_revid || seen.has(c.revid) || SUS.test(c.title)) return;
       const comment = c.comment || "";
       const isRevert = (c.tags || []).some((t) => REVERT_TAGS.includes(t));
-      const fits = kind === "revert" ? isRevert : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
+      const fits = kind === "revert" ? isRevert || isBadNote(comment) : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
       if (!fits) return;
       seen.add(c.revid);
       all.push({ title: c.title, revid: c.revid, old_revid: c.old_revid, comment: comment });
@@ -372,7 +382,7 @@ async function findOldEdits(title, kind) {
     const earlier = r.sha1 ? seen.get(r.sha1) : undefined;
     const isRevert = tagged || (earlier !== undefined && earlier < i - 1);
     const comment = r.comment || "";
-    const fits = kind === "revert" ? isRevert : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
+    const fits = kind === "revert" ? isRevert || isBadNote(comment) : !isRevert && FIX_NOTE.test(comment) && !REVERT_NOTE.test(comment);
     if (r.parentid && fits) found.push({ title: title, revid: r.revid, old_revid: r.parentid, comment: comment });
     if (r.sha1) seen.set(r.sha1, i);
   });
