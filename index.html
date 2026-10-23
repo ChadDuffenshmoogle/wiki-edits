@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v40</div>
+<div class="ver">v41</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -136,7 +136,16 @@ const BAD_CHANGED = /^(black|white|asian|jew\w*|arab\w*|mexican\w*|chinese|afric
 const BAD_NOTE = /\b(racis\w*|racial\w*|sexis\w*|ableis\w*|ageis\w*|homophob\w*|transphob\w*|biphob\w*|islamophob\w*|antisemit\w*|anti-semit\w*|xenophob\w*|misogyn\w*|misandr\w*|bigot\w*|supremac\w*|nazi\w*|hitler|slurs?|hate|hateful|hate speech|offensive|derogatory|pejorative|discriminat\w*|n-word|f-word|epithets?|abusive|harass\w*|profan\w*|obscen\w*|swear\w*|vulgar\w*|explicit|lewd|crude)\b/i;
 
 // Share of words that must differ between the two sentences.
-const MIN_CHANGE = 0.15;
+// Test mode: open the page with ?test on the end of the link. It is always endless and uses looser rules.
+const TEST = new URLSearchParams(location.search).has("test");
+const MIN_CHANGE = TEST ? 0.08 : 0.15;
+const MIN_SIM = TEST ? 0.25 : 0.35;
+const MIN_LENGTH_RATIO = TEST ? 0.4 : 0.55;
+const MIN_SENTENCE = TEST ? 35 : 50;
+const EDITS_TO_TRY = TEST ? 8 : 4;
+const POPULAR_CHANCE = TEST ? 0.4 : 0.95;
+// Wikipedia's automatic notes for undoing an edit (no keyword needed, but still skips bad topics).
+const AUTO_UNDO = /^(?:Reverted|Reverting|Undid|Undoing|Rollback|Revert to)\b/i;
 let score = 0, played = 0, streak = 0;
 let current = null;
 const DAILY_COUNT = 5;
@@ -180,7 +189,7 @@ const todayKey = new Date().toISOString().slice(0, 10);
 const dailyNumber = Math.max(1, Math.floor((Date.parse(todayKey) - Date.UTC(2026, 9, 21)) / 864e5) + 1);
 let daily = load("wikiDaily", null);
 if (!daily || daily.key !== todayKey) daily = { key: todayKey, results: [], titles: [] };
-let mode = daily.results.length >= DAILY_COUNT ? "endless" : "daily";
+let mode = TEST || daily.results.length >= DAILY_COUNT ? "endless" : "daily";
 
 const $ = (id) => document.getElementById(id);
 
@@ -425,7 +434,7 @@ function renderParts(el, parts) {
 
 // Keep only ordinary sentences: no adult topics, captions, file names, references or code.
 function isPlain(text) {
-  if (text.length < 50 || text.length >= 500) return false;
+  if (text.length < MIN_SENTENCE || text.length >= 500) return false;
   if (SUS.test(text) || BAD_TEXT.test(text)) return false;
   if (/[|{}<>\[\]=]|http|www\.|&[a-z#0-9]+;/i.test(text)) return false;
   if (/\.(jpe?g|png|gif|svg|webp|pdf|ogg|mp3|tiff?)\b/i.test(text)) return false;
@@ -476,7 +485,7 @@ async function diffPair(params, minChange, rand) {
     const pairs = [];
     for (const sa of sentsA) {
       if (sentsB.includes(sa) || !isPlain(sa)) continue;
-      let best = null, bestSim = 0.35;
+      let best = null, bestSim = MIN_SIM;
       for (const sb of sentsB) {
         if (sentsA.includes(sb) || !isPlain(sb)) continue;
         const sim = similarity(sa, sb);
@@ -486,7 +495,7 @@ async function diffPair(params, minChange, rand) {
       // Skip glued-together pairs where one sentence just contains the other, or is far longer.
       const shorter = Math.min(sa.length, best.length), longer = Math.max(sa.length, best.length);
       const stripEnd = (t) => t.replace(/[.!?"”'’)\s]+$/, "");
-      if (stripEnd(sa).includes(stripEnd(best)) || stripEnd(best).includes(stripEnd(sa)) || shorter / longer < 0.55) continue;
+      if (stripEnd(sa).includes(stripEnd(best)) || stripEnd(best).includes(stripEnd(sa)) || shorter / longer < MIN_LENGTH_RATIO) continue;
       const [partsA, partsB] = diffWords(sa, best);
       const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
       if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
@@ -524,6 +533,12 @@ function wikiUrl(title) {
   return "https://en.wikipedia.org/wiki/" + encodeURIComponent(title.replace(/ /g, "_"));
 }
 
+function isAutoUndo(raw) {
+  if (!TEST || !AUTO_UNDO.test(raw)) return false;
+  const c = cleanComment(raw);
+  return !BAD_NOTE.test(c) && !BAD_TEXT.test(c);
+}
+
 // Scan one well-known article's history from a random moment for edits with a funny note.
 async function findFunnyEdits(title, rand) {
   const data = await api({
@@ -531,8 +546,8 @@ async function findFunnyEdits(title, rand) {
     rvlimit: "500", rvdir: "newer", rvstart: randomTime(rand), rvprop: "ids|comment"
   });
   const found = (data.query.pages[0].revisions || [])
-    .filter((r) => r.parentid && isFunnyNote(cleanComment(r.comment || "")))
-    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment) }));
+    .filter((r) => r.parentid && (isFunnyNote(cleanComment(r.comment || "")) || isAutoUndo(r.comment || "")))
+    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment || "") || "Undid the previous edit" }));
   found.forEach((r) => {
     const k = keywordOf(r.note);
     wikiDebug.found[k] = (wikiDebug.found[k] || 0) + 1;
@@ -625,7 +640,7 @@ async function makeRound(rand, isDaily, avoid) {
     const pool = await getDailyPool();
     title = pool[Math.floor(rand() * pool.length)];
   } else {
-    title = await pickTitle(0.95, rand);
+    title = await pickTitle(POPULAR_CHANCE, rand);
   }
   if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title))) return null;
   wikiDebug.attempts++;
@@ -634,7 +649,7 @@ async function makeRound(rand, isDaily, avoid) {
   const edits = await findFunnyEdits(title, rand);
   if (edits.length === 0) { wikiDebug.noEdits++; return null; }
   const keep = (list) => list.forEach((rc) => { if (!isDaily && spare.length < 150) spare.push({ title: title, rc: rc }); });
-  const tryNow = Math.min(edits.length, 4);
+  const tryNow = Math.min(edits.length, EDITS_TO_TRY);
   for (let i = 0; i < tryNow; i++) {
     const round = await roundFromEdit(title, edits[i], rand, isDaily);
     if (round === false) return null;
@@ -872,6 +887,7 @@ $("region").addEventListener("change", () => {
   if (mode === "endless") nextRound();
 });
 
+if (TEST) document.querySelector(".ver").textContent += " TEST";
 renderBar();
 nextRound();
 </script>
