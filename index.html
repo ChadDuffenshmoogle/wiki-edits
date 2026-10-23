@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v50</div>
+<div class="ver">v51</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -136,13 +136,14 @@ const BAD_CHANGED = /^(balls?|ballz|milf|milfs|momma|mommy|daddy|booty|butts?|bo
 const BAD_NOTE = /\b(racis\w*|racial\w*|sexis\w*|ableis\w*|ageis\w*|homophob\w*|transphob\w*|biphob\w*|islamophob\w*|antisemit\w*|anti-semit\w*|xenophob\w*|misogyn\w*|misandr\w*|bigot\w*|supremac\w*|nazi\w*|hitler|slurs?|hate|hateful|hate speech|offensive|derogatory|pejorative|discriminat\w*|n-word|f-word|epithets?|abusive|harass\w*|profan\w*|obscen\w*|swear\w*|vulgar\w*|explicit|lewd|crude)\b/i;
 
 // Skip touchy subjects so the game stays light: politics, gender, abortion, immigration, religion, conflicts.
-const CONTROVERSY = /\b(non-?binary|transgender|trans|pronouns?|they\/them|gender\w*|abortion\w*|pro-?life|pro-?choice|immigra\w*|deport\w*|ICE|border|political\w*|politic\w*|trump|biden|obama|democrat\w*|republican\w*|conservativ\w*|liberal\w*|election\w*|israel\w*|palestin\w*|gaza|hamas|ukrain\w*|russia\w*|putin|religio\w*|christian\w*|muslim\w*|jewish|catholic|controvers\w*|protest\w*|lawsuit\w*|sued|allegation\w*|alleged\w*|scandal\w*|privacy|surveillance|police|gun\w*|firearm\w*|boyfriends?|girlfriends?|dating|dated|dates|married|marriage|marry|marries|husbands?|wives|wife|divorce\w*|engaged|engagement|fianc\w*|lovers?|affairs?|relationships?|romantic\w*|romance|bisexual\w*|lgbt\w*|queer|straight)\b/i;
+const CONTROVERSY = /\b(non-?binary|transgender|trans|pronouns?|they\/them|gender\w*|abortion\w*|pro-?life|pro-?choice|immigra\w*|deport\w*|ICE|border|political\w*|politic\w*|trump|biden|obama|democrat\w*|republican\w*|conservativ\w*|liberal\w*|election\w*|israel\w*|palestin\w*|gaza|hamas|ukrain\w*|russia\w*|putin|religio\w*|christian\w*|muslim\w*|jewish|catholic|controvers\w*|protest\w*|lawsuit\w*|sued|allegation\w*|alleged\w*|scandal\w*|privacy|surveillance|police|gun\w*|firearm\w*|boyfriends?|girlfriends?|dating|dated|dates|married|marriage|marry|marries|husbands?|wives|wife|divorce\w*|engaged|engagement|fianc\w*|lovers?|affairs?|relationships?|romantic\w*|romance|bisexual\w*|lgbt\w*|queer|straight|islam\w*|shia|shiite\w*|sunni\w*|quran|koran|allah|muhammad|mohammed|prophets?|caliph\w*|imams?|mosques?|jesus|christ|gods?|bible\w*|biblical|church(?:es)?|pope|vatican|hindu\w*|buddh\w*|sikh\w*|judaism|jews?|atheis\w*|theolog\w*|bishops?|scripture\w*|gospel\w*|crusade\w*|jihad\w*|messiah|satan\w*|pbuh|evangelic\w*|mormon\w*|baptist\w*)\b/i;
 
 // Share of words that must differ between the two sentences.
 // Matching rules: how different two sentences must be (and how alike) to count as one reworded sentence.
 const MIN_CHANGE = 0.08;
 const MIN_SIM = 0.25;
 const MIN_LENGTH_RATIO = 0.4;
+const MAX_CHANGE = 0.55; // more than this and it is a rewrite, not a one-spot mistake
 const MIN_SENTENCE = 35;
 const EDITS_TO_TRY = 8;
 // Endless mode: most of the time use the most-edited articles, then popular ones, rarely a random one.
@@ -320,7 +321,7 @@ async function loadPool(country, strict, backs) {
   const counts = new Map();
   lists.forEach((list) => list.forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
   let titles = [...counts.keys()].filter((t) =>
-    t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t) && !BAD_TEXT.test(t));
+    t !== "Main Page" && t !== "-" && !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t) && !BAD_TEXT.test(t) && !CONTROVERSY.test(t));
   const steady = titles.filter((t) => counts.get(t) >= 2);
   if (steady.length >= 80) titles = steady;
   if (titles.length === 0 && strict) throw new Error("No popular articles found");
@@ -387,7 +388,7 @@ function loadMostEdited() {
       } catch (e) {
         console.warn("[wiki] test mode: could not load the most-edited list (" + e.message + "), using recently vandalized articles instead");
       }
-      const list = titles.filter((t) => !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t) && !BAD_TEXT.test(t));
+      const list = titles.filter((t) => !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t) && !BAD_TEXT.test(t) && !CONTROVERSY.test(t));
       console.info("[wiki] test mode: " + list.length + " most-edited articles loaded (" + Math.round(performance.now() - t0) + " ms)");
       return list;
     })();
@@ -547,6 +548,7 @@ function plainWhy(text) {
   if (/\s[,;:.!?‚„]|[‚„]|\(\s*[;,)]/.test(text)) return "typo-looking punctuation";
   if (!/^["“'(]?[A-Z0-9]/.test(text)) return "doesn't start like a sentence";
   if (!/[.!?]["”'’)]*$/.test(text)) return "doesn't end like a sentence";
+  if (ABBREVIATIONS.test(text.split(" ").pop())) return "ends with an abbreviation (cut short)";
   const letters = (text.match(/[A-Za-z]/g) || []).length;
   if (letters / text.length < 0.7) return "too few letters";
   return "";
@@ -554,7 +556,7 @@ function plainWhy(text) {
 function isPlain(text) { return plainWhy(text) === ""; }
 
 // Cut a paragraph into single sentences (without splitting on "Dr." or "U.S.").
-const ABBREVIATIONS = /^(?:[A-Z]|Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|No|Inc|Ltd|Co|Mt|Gen|Col|Sen|Rep|Gov|Prof|Rev|Lt|Capt|Sgt|Jan|Feb|Mar|Apr|Aug|Sept|Oct|Nov|Dec|U\.S|U\.K|e\.g|i\.e|c|ca)\.$/;
+const ABBREVIATIONS = /^(?:[A-Z]|Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|No|Inc|Ltd|Co|Mt|Gen|Col|Sen|Rep|Gov|Prof|Rev|Lt|Capt|Sgt|Jan|Feb|Mar|Apr|Aug|Sept|Oct|Nov|Dec|[A-Z](?:\.[A-Z])+|U\.S|U\.K|e\.g|i\.e|c|ca)\.$/;
 function splitSentences(text) {
   const out = [];
   const re = /[.!?]["”’')\]]*\s+(?=["“‘(]?[A-Z0-9])/g;
@@ -625,6 +627,7 @@ async function diffPair(params, minChange, rand) {
       const [partsA, partsB] = diffWords(sa, best);
       const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
       if (changed < minChange) { bump("too few words changed"); continue; }
+      if (changed > MAX_CHANGE) { bump("rewritten too much"); continue; }
       allPairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB, changed: changed, similarity: bestSim });
     }
   }
@@ -650,6 +653,7 @@ function cleanComment(c) {
     .replace(/\s*\(\[\[WP:[^\]]*\]\]\)/g, "")
     .replace(/\/\*.*?\*\//g, "")
     .replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, "$1")
+    .replace(/\bUndid\s+\d{1,2}:\d{2},\s+\d{1,2}\s+\w+\s+\d{4}\s+revision\s+\d+\s+by\b\.?\s*/i, "")
     .replace(/^(?:Reverted|Reverting|Undid|Undoing)\b[^:]*?\bby\b[^:]*(?::|$)\s*/i, "")
     .replace(/\s*\((?:RW|TW|AWB|HG|STiki|Huggle)[^)]*\)/gi, "")
     .replace(/\s*\(talk\)/gi, "")
@@ -657,11 +661,16 @@ function cleanComment(c) {
     .replace(/\b(?:Revert(?:ed|ing)?|Restor\w*)\s+to\s+(?:the\s+)?(?:last|previous|earlier)\s+(?:version|revision|edit)\s+by\s+\S+/gi, "")
     .replace(/\b(vandalism|vandals?|edits?|changes?)\s+by\s+(?:User:)?[^\s.,;:]+(?:\.[^\s.,;:]+)*/gi, "$1")
     .replace(/\bUser:\S+/gi, "")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/\bto\s+(?:the\s+)?last\s+(?:good\s+)?(?:version|revision|edit)\s+by\s+\S+/gi, "")
+    .replace(/^BOT\s*-\s*/i, "")
+    .replace(/[{}]/g, "")
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "")
     .replace(/\b[0-9A-F]{1,4}(?::[0-9A-F]{0,4}){3,}/gi, "")
     .replace(/\s+([.,;:])/g, "$1")
     .replace(/(?:\.\s*){2,}/g, ". ")
     .replace(/^[\s:;,.\-]+/, "")
+    .replace(/(?:\s+with info)?\s+(?:from|by|to|at|on|in|via)[\s.]*$/i, "")
     .replace(/'{2,}/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -823,7 +832,7 @@ async function makeRound(rand, isDaily, avoid) {
   } else {
     title = await pickTitle(POPULAR_CHANCE, rand);
   }
-  if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title)) || (!isDaily && recentTitles.includes(title))) return null;
+  if (SUS.test(title) || BAD_TEXT.test(title) || CONTROVERSY.test(title) || (avoid && avoid.includes(title)) || (!isDaily && recentTitles.includes(title))) return null;
   wikiDebug.attempts++;
   const roundStart = performance.now();
   const srcName = isDaily ? "daily-popular" : (titleSource.get(title) || "?");
