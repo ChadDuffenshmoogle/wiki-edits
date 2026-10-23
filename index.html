@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v49</div>
+<div class="ver">v50</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -139,20 +139,20 @@ const BAD_NOTE = /\b(racis\w*|racial\w*|sexis\w*|ableis\w*|ageis\w*|homophob\w*|
 const CONTROVERSY = /\b(non-?binary|transgender|trans|pronouns?|they\/them|gender\w*|abortion\w*|pro-?life|pro-?choice|immigra\w*|deport\w*|ICE|border|political\w*|politic\w*|trump|biden|obama|democrat\w*|republican\w*|conservativ\w*|liberal\w*|election\w*|israel\w*|palestin\w*|gaza|hamas|ukrain\w*|russia\w*|putin|religio\w*|christian\w*|muslim\w*|jewish|catholic|controvers\w*|protest\w*|lawsuit\w*|sued|allegation\w*|alleged\w*|scandal\w*|privacy|surveillance|police|gun\w*|firearm\w*|boyfriends?|girlfriends?|dating|dated|dates|married|marriage|marry|marries|husbands?|wives|wife|divorce\w*|engaged|engagement|fianc\w*|lovers?|affairs?|relationships?|romantic\w*|romance|bisexual\w*|lgbt\w*|queer|straight)\b/i;
 
 // Share of words that must differ between the two sentences.
-// Test mode: open the page with ?test on the end of the link. It is always endless and uses looser rules.
-const TEST = new URLSearchParams(location.search).has("test");
-const MIN_CHANGE = TEST ? 0.08 : 0.15;
-const MIN_SIM = TEST ? 0.25 : 0.35;
-const MIN_LENGTH_RATIO = TEST ? 0.4 : 0.55;
-const MIN_SENTENCE = TEST ? 35 : 50;
-const EDITS_TO_TRY = TEST ? 8 : 4;
-const POPULAR_CHANCE = TEST ? 0.7 : 0.95;
+// Matching rules: how different two sentences must be (and how alike) to count as one reworded sentence.
+const MIN_CHANGE = 0.08;
+const MIN_SIM = 0.25;
+const MIN_LENGTH_RATIO = 0.4;
+const MIN_SENTENCE = 35;
+const EDITS_TO_TRY = 8;
+// Endless mode: most of the time use the most-edited articles, then popular ones, rarely a random one.
+const POPULAR_CHANCE = 0.9;
 
 let score = 0, played = 0, streak = 0;
 let current = null;
 const DAILY_COUNT = 5;
 // Debug numbers: open the browser console and type wikiDebug to see them.
-const wikiDebug = { attempts: 0, noEdits: 0, noPair: 0, repeats: 0, unsafe: 0, slowdowns: 0, waitedMs: 0, found: {}, shown: {} };
+const wikiDebug = { attempts: 0, noEdits: 0, noPair: 0, repeats: 0, unsafe: 0, slowdowns: 0, waitedMs: 0, undone: 0, tooBig: 0, found: {}, shown: {}, sources: {}, why: {} };
 window.wikiDebug = wikiDebug;
 // Shows what is happening right now while a question is loading, so it doesn't look stuck.
 let loading = false;
@@ -193,7 +193,7 @@ const todayKey = new Date().toISOString().slice(0, 10);
 const dailyNumber = Math.max(1, Math.floor((Date.parse(todayKey) - Date.UTC(2026, 9, 21)) / 864e5) + 1);
 let daily = load("wikiDaily", null);
 if (!daily || daily.key !== todayKey) daily = { key: todayKey, results: [], titles: [] };
-let mode = TEST || daily.results.length >= DAILY_COUNT ? "endless" : "daily";
+let mode = daily.results.length >= DAILY_COUNT ? "endless" : "daily";
 
 const $ = (id) => document.getElementById(id);
 
@@ -201,11 +201,18 @@ const $ = (id) => document.getElementById(id);
 // "slow down" every request waits. Its slow-down reply has no permission header, so the browser
 // shows it as a blocked ("Failed to fetch") request instead of a 429, and that counts too.
 const MAX_REQUESTS = 3;
-const GAP_MS = TEST ? 250 : 120;
+const GAP_MS = 250;
 let inFlight = 0, pausedUntil = 0, nextStart = 0;
 // Current pace: starts fast, drops to one request at a time after a slow-down reply, then creeps back up.
 let maxReq = MAX_REQUESTS, gapNow = GAP_MS, calm = 0;
-function slowDown() { maxReq = 1; gapNow = Math.min(gapNow * 2, 1500); calm = 0; }
+let lastSlowAt = 0;
+function slowDown() {
+  maxReq = 1;
+  calm = 0;
+  if (Date.now() - lastSlowAt < 3000) return; // several requests got the same 429: count it once
+  lastSlowAt = Date.now();
+  gapNow = Math.min(gapNow * 2, 1500);
+}
 function speedUp() {
   calm++;
   if (calm < 15) return;
@@ -394,18 +401,23 @@ async function mostEditedTitle(rand) {
   return mostEditedPool.pop();
 }
 
+// Which list each article came from, for the console numbers.
+const titleSource = new Map();
 async function pickTitle(popularChance, rand) {
-  if (TEST && rand() < 0.6) {
-    const hot = (await mostEditedTitle(rand)) || (await revertedTitle(rand));
-    if (hot) return hot;
+  const pick = (title, source) => { titleSource.set(title, source); return title; };
+  if (rand() < 0.6) {
+    const edited = await mostEditedTitle(rand);
+    if (edited) return pick(edited, "most-edited");
+    const hot = await revertedTitle(rand);
+    if (hot) return pick(hot, "recently-vandalized");
   }
   if (rand() < popularChance) {
     const pool = await getPool();
-    if (pool.length > 0) return pool[Math.floor(rand() * pool.length)];
+    if (pool.length > 0) return pick(pool[Math.floor(rand() * pool.length)], "popular");
   }
   const data = await api({ action: "query", list: "random", rnnamespace: "0", rnlimit: "10" });
   const safe = data.query.random.map((r) => r.title).filter((t) => !SUS.test(t));
-  return safe[0] || data.query.random[0].title;
+  return pick(safe[0] || data.query.random[0].title, "random");
 }
 
 // A random moment since Wikipedia started (January 2001).
@@ -524,17 +536,22 @@ function renderParts(el, parts) {
 }
 
 // Keep only ordinary sentences: no adult topics, captions, file names, references or code.
-function isPlain(text) {
-  if (text.length < MIN_SENTENCE || text.length >= 500) return false;
-  if (SUS.test(text) || BAD_TEXT.test(text) || CONTROVERSY.test(text)) return false;
-  if (/[|{}<>\[\]=]|http|www\.|&[a-z#0-9]+;/i.test(text)) return false;
-  if (/\.(jpe?g|png|gif|svg|webp|pdf|ogg|mp3|tiff?)\b/i.test(text)) return false;
-  if (/\s[,;:.!?‚„]|[‚„]|\(\s*[;,)]/.test(text)) return false;
-  if (!/^["“'(]?[A-Z0-9]/.test(text)) return false;
-  if (!/[.!?]["”'’)]*$/.test(text)) return false;
+// Gives the reason a sentence was rejected, or "" when it is fine.
+function plainWhy(text) {
+  if (text.length < MIN_SENTENCE) return "too short";
+  if (text.length >= 500) return "too long";
+  if (SUS.test(text) || BAD_TEXT.test(text)) return "adult or rude word";
+  if (CONTROVERSY.test(text)) return "touchy topic";
+  if (/[|{}<>\[\]=]|http|www\.|&[a-z#0-9]+;/i.test(text)) return "leftover wiki code or link";
+  if (/\.(jpe?g|png|gif|svg|webp|pdf|ogg|mp3|tiff?)\b/i.test(text)) return "file name";
+  if (/\s[,;:.!?‚„]|[‚„]|\(\s*[;,)]/.test(text)) return "typo-looking punctuation";
+  if (!/^["“'(]?[A-Z0-9]/.test(text)) return "doesn't start like a sentence";
+  if (!/[.!?]["”'’)]*$/.test(text)) return "doesn't end like a sentence";
   const letters = (text.match(/[A-Za-z]/g) || []).length;
-  return letters / text.length >= 0.7;
+  if (letters / text.length < 0.7) return "too few letters";
+  return "";
 }
+function isPlain(text) { return plainWhy(text) === ""; }
 
 // Cut a paragraph into single sentences (without splitting on "Dr." or "U.S.").
 const ABBREVIATIONS = /^(?:[A-Z]|Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|No|Inc|Ltd|Co|Mt|Gen|Col|Sen|Rep|Gov|Prof|Rev|Lt|Capt|Sgt|Jan|Feb|Mar|Apr|Aug|Sept|Oct|Nov|Dec|U\.S|U\.K|e\.g|i\.e|c|ca)\.$/;
@@ -552,7 +569,9 @@ function splitSentences(text) {
   return out.filter(Boolean);
 }
 
-// Ask Wikipedia for just the changed lines (small), then find one sentence that was reworded.
+// Ask Wikipedia for just the changed lines (small), then find the reworded sentences.
+// When nothing is usable, the console says why. If several sentences were reworded, the most changed one
+// is used (the editor's note most likely describes the biggest change).
 async function diffPair(params, minChange, rand) {
   let data;
   try {
@@ -563,54 +582,59 @@ async function diffPair(params, minChange, rand) {
   }
   const html = (data.compare && data.compare.body) || "";
   const doc = new DOMParser().parseFromString("<table>" + html + "</table>", "text/html");
+  const why = {};
+  const bump = (reason) => {
+    why[reason] = (why[reason] || 0) + 1;
+    wikiDebug.why[reason] = (wikiDebug.why[reason] || 0) + 1;
+  };
   const rows = [];
   doc.querySelectorAll("tr").forEach((tr) => {
     const d = tr.querySelector("td.diff-deletedline"), a = tr.querySelector("td.diff-addedline");
     if (!d || !a) return;
     const r = d.textContent.trim(), b = a.textContent.trim();
-    if (/^[|{}!*#:;=<-]/.test(r) || /^[|{}!*#:;=<-]/.test(b)) return;
-    if (/\[\[(File|Image|Category|Media):/i.test(r + b)) return;
+    if (/^[|{}!*#:;=<-]/.test(r) || /^[|{}!*#:;=<-]/.test(b) || /\[\[(File|Image|Category|Media):/i.test(r + b)) {
+      bump("changed line is a table, list or file");
+      return;
+    }
     rows.push([r, b]);
   });
+  if (rows.length === 0) bump("no line was reworded (only added or removed)");
   const allPairs = [];
   for (const [r, b] of shuffle(rows, rand)) {
     const sentsA = splitSentences(clean(r)), sentsB = splitSentences(clean(b));
-    const pairs = [];
     for (const sa of sentsA) {
-      if (sentsB.includes(sa) || !isPlain(sa)) continue;
-      let best = null, bestSim = MIN_SIM;
+      if (sentsB.includes(sa)) continue;
+      const badOld = plainWhy(sa);
+      if (badOld) { bump("old sentence " + badOld); continue; }
+      let best = null, bestSim = MIN_SIM, badNew = "";
       for (const sb of sentsB) {
-        if (sentsA.includes(sb) || !isPlain(sb)) continue;
+        if (sentsA.includes(sb)) continue;
+        const w = plainWhy(sb);
+        if (w) { badNew = w; continue; }
         const sim = similarity(sa, sb);
         if (sim > bestSim) { best = sb; bestSim = sim; }
       }
-      if (!best) continue;
+      if (!best) { bump(badNew ? "new sentence " + badNew : "no similar new sentence"); continue; }
       // Skip glued-together pairs where one sentence just contains the other, or is far longer.
       const shorter = Math.min(sa.length, best.length), longer = Math.max(sa.length, best.length);
       const stripEnd = (t) => t.replace(/[.!?"”'’)\s]+$/, "");
-      if (stripEnd(sa).includes(stripEnd(best)) || stripEnd(best).includes(stripEnd(sa)) || shorter / longer < MIN_LENGTH_RATIO) continue;
+      if (stripEnd(sa).includes(stripEnd(best)) || stripEnd(best).includes(stripEnd(sa))) { bump("one sentence just contains the other"); continue; }
+      if (shorter / longer < MIN_LENGTH_RATIO) { bump("sentences too different in length"); continue; }
       const wordsOnly = (t) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-      if (wordsOnly(sa) === wordsOnly(best)) {
-        console.debug("[wiki] skipped a punctuation/capital-letter-only change: " + sa.slice(0, 80));
-        continue;
-      }
+      if (wordsOnly(sa) === wordsOnly(best)) { bump("only punctuation or capitals changed"); continue; }
       const [partsA, partsB] = diffWords(sa, best);
       const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
-      if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB, changed: changed });
+      if (changed < minChange) { bump("too few words changed"); continue; }
+      allPairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB, changed: changed, similarity: bestSim });
     }
-    if (!TEST && pairs.length > 0) {
-      const pick = pairs[Math.floor(rand() * pairs.length)];
-      return { ...pick, candidates: pairs.length, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
-    }
-    allPairs.push(...pairs);
   }
-  if (TEST && allPairs.length > 0) {
-    // Several sentences were reworded: the note probably describes the biggest change, so use that one.
-    const top = allPairs.reduce((m, x) => (x.changed > m.changed ? x : m));
-    if (allPairs.length > 1) console.debug("[wiki] edit " + params.torev + ": " + allPairs.length + " sentences were reworded, using the most changed one");
-    return { ...top, candidates: allPairs.length, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
+  if (allPairs.length === 0) {
+    const reasons = Object.entries(why).sort((x, y) => y[1] - x[1]).map(([k, v]) => k + " x" + v).join("; ");
+    console.debug("[wiki] edit " + params.torev + ": no usable sentence (" + rows.length + " reworded line(s)). Why: " + (reasons || "nothing changed"));
+    return null;
   }
-  return null;
+  const top = allPairs.reduce((m, x) => (x.changed > m.changed ? x : m));
+  return { ...top, candidates: allPairs.length, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
 }
 
 // Show a timestamp as a short date and time, e.g. "Mar 3, 2015, 4:20 PM".
@@ -647,33 +671,41 @@ function wikiUrl(title) {
   return "https://en.wikipedia.org/wiki/" + encodeURIComponent(title.replace(/ /g, "_"));
 }
 
-// Scan one well-known article's history from a random moment for edits with a funny note.
+// Scan one article's history from a random moment for edits with a funny note.
+// Wikipedia's own change tags help keep "mistake" and "fix" the right way round:
+// an edit that was itself undone later is never a fix, and an edit made by rollback/undo is a confirmed fix.
+const UNDO_TAGS = ["mw-rollback", "mw-undo", "mw-manual-revert"];
 async function findFunnyEdits(title, rand) {
   const data = await api({
     action: "query", prop: "revisions", titles: title,
-    rvlimit: "500", rvdir: "newer", rvstart: randomTime(rand), rvprop: "ids|comment|size"
+    rvlimit: "500", rvdir: "newer", rvstart: randomTime(rand), rvprop: "ids|comment|size|tags"
   });
   const revs = data.query.pages[0].revisions || [];
   const sizeOf = new Map(revs.map((r) => [r.revid, r.size]));
-  let tooBig = 0;
-  const found = revs
-    .filter((r) => r.parentid && isFunnyNote(cleanComment(r.comment || "")))
-    .map((r) => {
-      const before = sizeOf.get(r.parentid);
-      const delta = before === undefined || r.size === undefined ? null : Math.abs(r.size - before);
-      return { title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment), delta: delta };
-    })
-    .filter((r) => {
-      if (TEST && r.delta !== null && r.delta > 1500) { tooBig++; return false; }
-      return true;
-    });
-  if (tooBig > 0) console.debug("[wiki] " + title + ": skipped " + tooBig + " edit(s) that changed too much text to be one reworded sentence");
+  const tagsOf = new Map(revs.map((r) => [r.revid, r.tags || []]));
+  let undone = 0, tooBig = 0, funny = 0;
+  const found = [];
+  for (const r of revs) {
+    if (!r.parentid || !isFunnyNote(cleanComment(r.comment || ""))) continue;
+    funny++;
+    const tags = r.tags || [];
+    if (tags.includes("mw-reverted")) { undone++; continue; }
+    const before = sizeOf.get(r.parentid);
+    const delta = before === undefined || r.size === undefined ? null : Math.abs(r.size - before);
+    if (delta !== null && delta > 1500) { tooBig++; continue; }
+    const confirmed = (tagsOf.get(r.parentid) || []).includes("mw-reverted") || tags.some((t) => UNDO_TAGS.includes(t));
+    found.push({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment), delta: delta, confirmed: confirmed, tags: tags });
+  }
+  wikiDebug.undone += undone;
+  wikiDebug.tooBig += tooBig;
   found.forEach((r) => {
     const k = keywordOf(r.note);
     wikiDebug.found[k] = (wikiDebug.found[k] || 0) + 1;
   });
-  // Test mode: small changes first, since they are the most likely to be one reworded sentence.
-  const rank = (r) => funTier(r.note) * 2 + (TEST && r.delta !== null && r.delta > 300 ? 1 : 0);
+  console.debug("[wiki] " + title + ": read " + revs.length + " revisions, " + funny + " with a funny note -> " + found.length + " usable (" +
+    found.filter((r) => r.confirmed).length + " confirmed as reverts, " + undone + " dropped because they were undone later, " + tooBig + " dropped for changing too much text)");
+  // Confirmed reverts first, then the funnier notes, then small changes (most likely one reworded sentence).
+  const rank = (r) => (r.confirmed ? 0 : 4) + funTier(r.note) * 2 + (r.delta !== null && r.delta > 300 ? 1 : 0);
   return shuffle(found, rand).sort((a, b) => rank(a) - rank(b)).slice(0, 12);
 }
 
@@ -713,28 +745,49 @@ async function isSafeArticle(title) {
 
 // Edits found earlier but not used yet (endless only), so Wikipedia has to be searched less often.
 const spare = [];
+// Articles already turned into a question this visit (claimed the moment a question is built, so two
+// parallel searches can never make two questions from the same article).
+const claimed = new Set();
 
 // Turn one edit with a funny note into a question. Gives null if this edit is not usable,
 // or false if the whole article is off limits.
 async function roundFromEdit(title, rc, rand, isDaily) {
-  if (!isDaily && (seen.has(rc.revid) || recentTitles.includes(title) || (current && current.revid === rc.revid))) {
+  if (!isDaily && (seen.has(rc.revid) || claimed.has(title) || recentTitles.includes(title) || (current && current.revid === rc.revid))) {
     console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, already shown (or article shown lately)");
     return null;
   }
   progress("Comparing two versions of " + title + "...");
   const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
   if (!pair) { wikiDebug.noPair++; console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, no sentence was reworded in a usable way"); return null; }
-  const flagged = [...pair.partsA, ...pair.partsB].some((w) =>
-    w.d && w.t.split(/[^A-Za-z]+/).some((x) => GENDER.test(x) || BAD_CHANGED.test(x) || PROFANE_PART.test(x)));
-  if (flagged) { console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, a changed word is on the block list"); return null; }
+  let flaggedWord = null;
+  for (const w of [...pair.partsA, ...pair.partsB]) {
+    if (!w.d) continue;
+    const hit = w.t.split(/[^A-Za-z]+/).find((x) => x && (GENDER.test(x) || BAD_CHANGED.test(x) || PROFANE_PART.test(x)));
+    if (hit) { flaggedWord = hit; break; }
+  }
+  if (flaggedWord) {
+    wikiDebug.why["changed word on the block list"] = (wikiDebug.why["changed word on the block list"] || 0) + 1;
+    console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, changed word \"" + flaggedWord + "\" is on the block list");
+    return null;
+  }
   const key = textKey(pair.textA, pair.textB);
   if (!isDaily && seen.has(key)) { wikiDebug.repeats++; console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, same sentences already shown"); return null; }
   progress("Checking that " + title + " is a suitable article...");
   if (!(await isSafeArticle(title))) { wikiDebug.unsafe++; console.debug("[wiki] " + title + ": whole article skipped, not a suitable topic"); return false; }
+  if (!isDaily) {
+    if (claimed.has(title)) { console.debug("[wiki] " + title + ": another search just used this article, skipping"); return null; }
+    claimed.add(title);
+  }
+  const source = isDaily ? "daily-popular" : (titleSource.get(title) || "?");
+  const stat = wikiDebug.sources[source] = wikiDebug.sources[source] || { articles: 0, withFunny: 0, questions: 0 };
+  stat.questions++;
   const keyword = keywordOf(rc.note);
   wikiDebug.shown[keyword] = (wikiDebug.shown[keyword] || 0) + 1;
   console.info("[wiki] found:", title, "| keyword:", keyword, "| note:", rc.note);
-  console.info("[wiki] question details: " + title + " | edit " + rc.revid + " | note: " + rc.note + " | reworded sentences in edit: " + pair.candidates +
+  console.info("[wiki] question details: " + title + " (from: " + source + ") | edit " + rc.revid + " | note: " + rc.note +
+    "\n  checks: " + (rc.confirmed ? "confirmed revert by Wikipedia's tags" : "not confirmed by tags (older edit or plain edit)") + " | tags: " + ((rc.tags || []).join(", ") || "none") +
+    " | size change: " + (rc.delta === null || rc.delta === undefined ? "unknown" : rc.delta + " bytes") + " | reworded sentences in edit: " + pair.candidates +
+    " | words changed: " + Math.round(pair.changed * 100) + "% | similarity: " + Math.round(pair.similarity * 100) + "%" +
     "\n  link: https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) + "&diff=" + rc.revid + "&oldid=" + rc.old_revid +
     "\n  mistake: " + pair.textA + "\n  fix: " + pair.textB + "\n  (the order above is old then new; the old one is the mistake)");
   progress("Fetching the picture for " + title + "...");
@@ -773,6 +826,9 @@ async function makeRound(rand, isDaily, avoid) {
   if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title)) || (!isDaily && recentTitles.includes(title))) return null;
   wikiDebug.attempts++;
   const roundStart = performance.now();
+  const srcName = isDaily ? "daily-popular" : (titleSource.get(title) || "?");
+  const srcStat = wikiDebug.sources[srcName] = wikiDebug.sources[srcName] || { articles: 0, withFunny: 0, questions: 0 };
+  srcStat.articles++;
   if (!isDaily) syncSeen();
   progress("Reading the edit history of " + title + "...");
   const edits = await findFunnyEdits(title, rand);
@@ -781,7 +837,8 @@ async function makeRound(rand, isDaily, avoid) {
     console.debug("[wiki] " + title + ": no edit with a funny note in that stretch of history (" + Math.round(performance.now() - roundStart) + " ms)");
     return null;
   }
-  console.debug("[wiki] " + title + ": " + edits.length + " edit(s) with a funny note, trying up to " + EDITS_TO_TRY + " (" + Math.round(performance.now() - roundStart) + " ms so far)");
+  srcStat.withFunny++;
+  console.debug("[wiki] " + title + " (" + srcName + "): " + edits.length + " edit(s) with a funny note, trying up to " + EDITS_TO_TRY + " (" + Math.round(performance.now() - roundStart) + " ms so far)");
   const keep = (list) => list.forEach((rc) => { if (!isDaily && spare.length < 150) spare.push({ title: title, rc: rc }); });
   const tryNow = Math.min(edits.length, EDITS_TO_TRY);
   for (let i = 0; i < tryNow; i++) {
@@ -1001,7 +1058,11 @@ async function nextRound() {
       (waiting && waiting.tag === tag ? "prefetched" : "built fresh") + ") | attempts so far: " + wikiDebug.attempts);
     console.info("[wiki] totals so far: " + wikiDebug.attempts + " articles checked, " + wikiDebug.noEdits + " had no funny edits, " +
       wikiDebug.noPair + " edits had no usable sentence, " + wikiDebug.repeats + " repeats, " + wikiDebug.unsafe + " unsuitable articles, " +
-      wikiDebug.slowdowns + " slow-down replies (" + Math.round(wikiDebug.waitedMs / 1000) + " s spent waiting)");
+      wikiDebug.slowdowns + " slow-down replies (" + Math.round(wikiDebug.waitedMs / 1000) + " s spent waiting; pace now " + maxReq + " at a time, " + gapNow + " ms apart)");
+    const perSource = Object.entries(wikiDebug.sources).map(([k, v]) => k + ": " + v.articles + " articles -> " + v.withFunny + " had usable funny edits -> " + v.questions + " questions").join(" | ");
+    const topWhy = Object.entries(wikiDebug.why).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => k + " x" + v).join("; ");
+    console.info("[wiki] by source: " + perSource + "\n  most common reasons a compared edit was unusable: " + (topWhy || "none yet") +
+      "\n  dropped before comparing: " + wikiDebug.undone + " edits that were undone later, " + wikiDebug.tooBig + " that changed too much text");
     prefetchNext();
   } catch (e) {
     if (my !== ticket) return;
@@ -1031,7 +1092,6 @@ $("region").addEventListener("change", () => {
   if (mode === "endless") nextRound();
 });
 
-if (TEST) document.querySelector(".ver").textContent += " TEST";
 renderBar();
 nextRound();
 </script>
