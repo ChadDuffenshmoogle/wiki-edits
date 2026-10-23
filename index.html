@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v48</div>
+<div class="ver">v49</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -203,17 +203,26 @@ const $ = (id) => document.getElementById(id);
 const MAX_REQUESTS = 3;
 const GAP_MS = TEST ? 250 : 120;
 let inFlight = 0, pausedUntil = 0, nextStart = 0;
+// Current pace: starts fast, drops to one request at a time after a slow-down reply, then creeps back up.
+let maxReq = MAX_REQUESTS, gapNow = GAP_MS, calm = 0;
+function slowDown() { maxReq = 1; gapNow = Math.min(gapNow * 2, 1500); calm = 0; }
+function speedUp() {
+  calm++;
+  if (calm < 15) return;
+  calm = 0;
+  gapNow = Math.max(GAP_MS, Math.round(gapNow * 0.8));
+  if (maxReq < MAX_REQUESTS && gapNow <= GAP_MS * 2) maxReq++;
+}
 const slotQueue = [];
 function takeSlot() {
   return new Promise((resolve) => {
     const go = () => { inFlight++; resolve(); };
-    if (inFlight < MAX_REQUESTS) go(); else slotQueue.push(go);
+    if (inFlight < maxReq) go(); else slotQueue.push(go);
   });
 }
 function freeSlot() {
   inFlight--;
-  const next = slotQueue.shift();
-  if (next) next();
+  while (inFlight < maxReq && slotQueue.length > 0) slotQueue.shift()();
 }
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -233,7 +242,7 @@ async function limitedFetch(url) {
   try {
     for (let tries = 0; ; tries++) {
       const startAt = Math.max(Date.now(), pausedUntil, nextStart);
-      nextStart = startAt + GAP_MS;
+      nextStart = startAt + gapNow;
       if (startAt > Date.now()) await pause(startAt - Date.now());
       let res = null;
       const began = performance.now();
@@ -248,12 +257,14 @@ async function limitedFetch(url) {
         const waitMs = Math.round(pausedUntil - Date.now());
         wikiDebug.slowdowns++;
         wikiDebug.waitedMs += waitMs;
+        slowDown();
         console.warn("[wiki] Wikipedia said slow down (" + (res === null ? "blocked" : "429") + ") while " + whatIs(url) +
-          " after " + took + " ms. Everything waits " + waitMs + " ms, then retry " + (tries + 1) + " of 4.");
+          " after " + took + " ms. Everything waits " + waitMs + " ms, then retry " + (tries + 1) + " of 4. Pace is now " + maxReq + " at a time, " + gapNow + " ms apart.");
         progress("Wikipedia is busy, waiting a few seconds before trying again...");
         continue;
       }
       if (res !== null) console.debug("[wiki] " + whatIs(url) + " -> " + res.status + " in " + took + " ms");
+      if (res !== null && res.ok) speedUp();
       if (res === null) throw new Error("Could not reach Wikipedia (it may be asking us to slow down). Wait a minute and try again.");
       return res;
     }
@@ -640,16 +651,30 @@ function wikiUrl(title) {
 async function findFunnyEdits(title, rand) {
   const data = await api({
     action: "query", prop: "revisions", titles: title,
-    rvlimit: "500", rvdir: "newer", rvstart: randomTime(rand), rvprop: "ids|comment"
+    rvlimit: "500", rvdir: "newer", rvstart: randomTime(rand), rvprop: "ids|comment|size"
   });
-  const found = (data.query.pages[0].revisions || [])
+  const revs = data.query.pages[0].revisions || [];
+  const sizeOf = new Map(revs.map((r) => [r.revid, r.size]));
+  let tooBig = 0;
+  const found = revs
     .filter((r) => r.parentid && isFunnyNote(cleanComment(r.comment || "")))
-    .map((r) => ({ title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment) }));
+    .map((r) => {
+      const before = sizeOf.get(r.parentid);
+      const delta = before === undefined || r.size === undefined ? null : Math.abs(r.size - before);
+      return { title: title, revid: r.revid, old_revid: r.parentid, note: cleanComment(r.comment), delta: delta };
+    })
+    .filter((r) => {
+      if (TEST && r.delta !== null && r.delta > 1500) { tooBig++; return false; }
+      return true;
+    });
+  if (tooBig > 0) console.debug("[wiki] " + title + ": skipped " + tooBig + " edit(s) that changed too much text to be one reworded sentence");
   found.forEach((r) => {
     const k = keywordOf(r.note);
     wikiDebug.found[k] = (wikiDebug.found[k] || 0) + 1;
   });
-  return shuffle(found, rand).sort((a, b) => funTier(a.note) - funTier(b.note)).slice(0, 12);
+  // Test mode: small changes first, since they are the most likely to be one reworded sentence.
+  const rank = (r) => funTier(r.note) * 2 + (TEST && r.delta !== null && r.delta > 300 ? 1 : 0);
+  return shuffle(found, rand).sort((a, b) => rank(a) - rank(b)).slice(0, 12);
 }
 
 // The article's main picture, if it has one.
