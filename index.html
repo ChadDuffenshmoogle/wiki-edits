@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v44</div>
+<div class="ver">v45</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -136,7 +136,7 @@ const BAD_CHANGED = /^(balls?|ballz|milf|milfs|momma|mommy|daddy|booty|butts?|bo
 const BAD_NOTE = /\b(racis\w*|racial\w*|sexis\w*|ableis\w*|ageis\w*|homophob\w*|transphob\w*|biphob\w*|islamophob\w*|antisemit\w*|anti-semit\w*|xenophob\w*|misogyn\w*|misandr\w*|bigot\w*|supremac\w*|nazi\w*|hitler|slurs?|hate|hateful|hate speech|offensive|derogatory|pejorative|discriminat\w*|n-word|f-word|epithets?|abusive|harass\w*|profan\w*|obscen\w*|swear\w*|vulgar\w*|explicit|lewd|crude)\b/i;
 
 // Skip touchy subjects so the game stays light: politics, gender, abortion, immigration, religion, conflicts.
-const CONTROVERSY = /\b(non-?binary|transgender|trans|pronouns?|they\/them|gender\w*|abortion\w*|pro-?life|pro-?choice|immigra\w*|deport\w*|ICE|border|political\w*|politic\w*|trump|biden|obama|democrat\w*|republican\w*|conservativ\w*|liberal\w*|election\w*|israel\w*|palestin\w*|gaza|hamas|ukrain\w*|russia\w*|putin|religio\w*|christian\w*|muslim\w*|jewish|catholic|controvers\w*|protest\w*|lawsuit\w*|sued|allegation\w*|alleged\w*|scandal\w*|privacy|surveillance|police|gun\w*|firearm\w*)\b/i;
+const CONTROVERSY = /\b(non-?binary|transgender|trans|pronouns?|they\/them|gender\w*|abortion\w*|pro-?life|pro-?choice|immigra\w*|deport\w*|ICE|border|political\w*|politic\w*|trump|biden|obama|democrat\w*|republican\w*|conservativ\w*|liberal\w*|election\w*|israel\w*|palestin\w*|gaza|hamas|ukrain\w*|russia\w*|putin|religio\w*|christian\w*|muslim\w*|jewish|catholic|controvers\w*|protest\w*|lawsuit\w*|sued|allegation\w*|alleged\w*|scandal\w*|privacy|surveillance|police|gun\w*|firearm\w*|boyfriends?|girlfriends?|dating|dated|dates|married|marriage|marry|marries|husbands?|wives|wife|divorce\w*|engaged|engagement|fianc\w*|lovers?|affairs?|relationships?|romantic\w*|romance|bisexual\w*|lgbt\w*|queer|straight)\b/i;
 
 // Share of words that must differ between the two sentences.
 // Test mode: open the page with ?test on the end of the link. It is always endless and uses looser rules.
@@ -146,7 +146,7 @@ const MIN_SIM = TEST ? 0.25 : 0.35;
 const MIN_LENGTH_RATIO = TEST ? 0.4 : 0.55;
 const MIN_SENTENCE = TEST ? 35 : 50;
 const EDITS_TO_TRY = TEST ? 8 : 4;
-const POPULAR_CHANCE = TEST ? 0.4 : 0.95;
+const POPULAR_CHANCE = TEST ? 0.7 : 0.95;
 
 let score = 0, played = 0, streak = 0;
 let current = null;
@@ -331,7 +331,32 @@ function getDailyPool() {
   return dailyPoolPromise;
 }
 
+// Test mode: articles that were vandalized and reverted in the last few weeks (they have lots of edits).
+let revertedTitles = [];
+async function revertedTitle(rand) {
+  try {
+    if (revertedTitles.length === 0) {
+      const t0 = performance.now();
+      const data = await api({
+        action: "query", list: "recentchanges", rctype: "edit", rcnamespace: "0", rctag: "mw-reverted",
+        rclimit: "500", rcprop: "title", rcdir: "older", rcstart: new Date(Date.now() - rand() * 25 * 864e5).toISOString()
+      });
+      revertedTitles = shuffle([...new Set((data.query.recentchanges || []).map((r) => r.title))], rand)
+        .filter((t) => !SUS.test(t) && !BAD_TEXT.test(t));
+      console.info("[wiki] test mode: found " + revertedTitles.length + " recently vandalized articles to search (" + Math.round(performance.now() - t0) + " ms)");
+    }
+    return revertedTitles.pop() || null;
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
+}
+
 async function pickTitle(popularChance, rand) {
+  if (TEST && rand() < 0.5) {
+    const hot = await revertedTitle(rand);
+    if (hot) return hot;
+  }
   if (rand() < popularChance) {
     const pool = await getPool();
     if (pool.length > 0) return pool[Math.floor(rand() * pool.length)];
@@ -547,6 +572,15 @@ function cleanComment(c) {
     .replace(/^(?:Reverted|Reverting|Undid|Undoing)\b[^:]*?\bby\b[^:]*(?::|$)\s*/i, "")
     .replace(/\s*\((?:RW|TW|AWB|HG|STiki|Huggle)[^)]*\)/gi, "")
     .replace(/\s*\(talk\)/gi, "")
+    .replace(/^(?:Restored|Restoring)\s+revision\s+\d+\s+by\s+[^:]*:\s*/i, "")
+    .replace(/\b(?:Revert(?:ed|ing)?|Restor\w*)\s+to\s+(?:the\s+)?(?:last|previous|earlier)\s+(?:version|revision|edit)\s+by\s+\S+/gi, "")
+    .replace(/\b(vandalism|vandals?|edits?|changes?)\s+by\s+(?:User:)?[^\s.,;:]+(?:\.[^\s.,;:]+)*/gi, "$1")
+    .replace(/\bUser:\S+/gi, "")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "")
+    .replace(/\b[0-9A-F]{1,4}(?::[0-9A-F]{0,4}){3,}/gi, "")
+    .replace(/\s+([.,;:])/g, "$1")
+    .replace(/(?:\.\s*){2,}/g, ". ")
+    .replace(/^[\s:;,.\-]+/, "")
     .replace(/'{2,}/g, "")
     .replace(/\s+/g, " ")
     .trim();
