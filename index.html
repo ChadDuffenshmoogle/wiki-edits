@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v42</div>
+<div class="ver">v43</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -152,7 +152,7 @@ let score = 0, played = 0, streak = 0;
 let current = null;
 const DAILY_COUNT = 5;
 // Debug numbers: open the browser console and type wikiDebug to see them.
-const wikiDebug = { attempts: 0, noEdits: 0, noPair: 0, repeats: 0, unsafe: 0, found: {}, shown: {} };
+const wikiDebug = { attempts: 0, noEdits: 0, noPair: 0, repeats: 0, unsafe: 0, slowdowns: 0, waitedMs: 0, found: {}, shown: {} };
 window.wikiDebug = wikiDebug;
 // Shows what is happening right now while a question is loading, so it doesn't look stuck.
 let loading = false;
@@ -217,6 +217,17 @@ function freeSlot() {
 }
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function whatIs(url) {
+  try {
+    const q = new URL(url).searchParams;
+    if (q.get("action") === "compare") return "comparing edits " + q.get("fromrev") + " vs " + q.get("torev");
+    if (q.get("list") === "random") return "asking for random articles";
+    if (q.get("prop") === "revisions") return "reading edit history of " + q.get("titles");
+    if (q.get("prop")) return "asking for " + q.get("prop") + " of " + (q.get("titles") || "an article");
+    return url.slice(0, 90);
+  } catch (e) { return url.slice(0, 90); }
+}
+
 async function limitedFetch(url) {
   await takeSlot();
   try {
@@ -225,16 +236,24 @@ async function limitedFetch(url) {
       nextStart = startAt + GAP_MS;
       if (startAt > Date.now()) await pause(startAt - Date.now());
       let res = null;
+      const began = performance.now();
       try {
         res = await fetch(url);
       } catch (e) {
         res = null;
       }
+      const took = Math.round(performance.now() - began);
       if ((res === null || res.status === 429) && tries < 4) {
         pausedUntil = Math.max(pausedUntil, Date.now() + 2000 * 2 ** tries + Math.random() * 1000);
+        const waitMs = Math.round(pausedUntil - Date.now());
+        wikiDebug.slowdowns++;
+        wikiDebug.waitedMs += waitMs;
+        console.warn("[wiki] Wikipedia said slow down (" + (res === null ? "blocked" : "429") + ") while " + whatIs(url) +
+          " after " + took + " ms. Everything waits " + waitMs + " ms, then retry " + (tries + 1) + " of 4.");
         progress("Wikipedia is busy, waiting a few seconds before trying again...");
         continue;
       }
+      if (res !== null) console.debug("[wiki] " + whatIs(url) + " -> " + res.status + " in " + took + " ms");
       if (res === null) throw new Error("Could not reach Wikipedia (it may be asking us to slow down). Wait a minute and try again.");
       return res;
     }
@@ -593,17 +612,20 @@ const spare = [];
 // Turn one edit with a funny note into a question. Gives null if this edit is not usable,
 // or false if the whole article is off limits.
 async function roundFromEdit(title, rc, rand, isDaily) {
-  if (!isDaily && (seen.has(rc.revid) || recentTitles.includes(title) || (current && current.revid === rc.revid))) return null;
+  if (!isDaily && (seen.has(rc.revid) || recentTitles.includes(title) || (current && current.revid === rc.revid))) {
+    console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, already shown (or article shown lately)");
+    return null;
+  }
   progress("Comparing two versions of " + title + "...");
   const pair = await diffPair({ fromrev: String(rc.old_revid), torev: String(rc.revid) }, MIN_CHANGE, rand);
-  if (!pair) { wikiDebug.noPair++; return null; }
+  if (!pair) { wikiDebug.noPair++; console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, no sentence was reworded in a usable way"); return null; }
   const flagged = [...pair.partsA, ...pair.partsB].some((w) =>
     w.d && w.t.split(/[^A-Za-z]+/).some((x) => GENDER.test(x) || BAD_CHANGED.test(x) || PROFANE_PART.test(x)));
-  if (flagged) return null;
+  if (flagged) { console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, a changed word is on the block list"); return null; }
   const key = textKey(pair.textA, pair.textB);
-  if (!isDaily && seen.has(key)) { wikiDebug.repeats++; return null; }
+  if (!isDaily && seen.has(key)) { wikiDebug.repeats++; console.debug("[wiki] " + title + ": edit " + rc.revid + " skipped, same sentences already shown"); return null; }
   progress("Checking that " + title + " is a suitable article...");
-  if (!(await isSafeArticle(title))) { wikiDebug.unsafe++; return false; }
+  if (!(await isSafeArticle(title))) { wikiDebug.unsafe++; console.debug("[wiki] " + title + ": whole article skipped, not a suitable topic"); return false; }
   const keyword = keywordOf(rc.note);
   wikiDebug.shown[keyword] = (wikiDebug.shown[keyword] || 0) + 1;
   console.info("[wiki] found:", title, "| keyword:", keyword, "| note:", rc.note);
@@ -642,10 +664,16 @@ async function makeRound(rand, isDaily, avoid) {
   }
   if (SUS.test(title) || BAD_TEXT.test(title) || (avoid && avoid.includes(title)) || (!isDaily && recentTitles.includes(title))) return null;
   wikiDebug.attempts++;
+  const roundStart = performance.now();
   if (!isDaily) syncSeen();
   progress("Reading the edit history of " + title + "...");
   const edits = await findFunnyEdits(title, rand);
-  if (edits.length === 0) { wikiDebug.noEdits++; return null; }
+  if (edits.length === 0) {
+    wikiDebug.noEdits++;
+    console.debug("[wiki] " + title + ": no edit with a funny note in that stretch of history (" + Math.round(performance.now() - roundStart) + " ms)");
+    return null;
+  }
+  console.debug("[wiki] " + title + ": " + edits.length + " edit(s) with a funny note, trying up to " + EDITS_TO_TRY + " (" + Math.round(performance.now() - roundStart) + " ms so far)");
   const keep = (list) => list.forEach((rc) => { if (!isDaily && spare.length < 150) spare.push({ title: title, rc: rc }); });
   const tryNow = Math.min(edits.length, EDITS_TO_TRY);
   for (let i = 0; i < tryNow; i++) {
@@ -653,10 +681,12 @@ async function makeRound(rand, isDaily, avoid) {
     if (round === false) return null;
     if (round) {
       keep(edits.slice(i + 1));
+      console.info("[wiki] built a question from " + title + " in " + Math.round(performance.now() - roundStart) + " ms (edit " + (i + 1) + " of " + edits.length + ")");
       return round;
     }
   }
   keep(edits.slice(tryNow));
+  console.debug("[wiki] " + title + ": none of the first " + tryNow + " edits worked (" + Math.round(performance.now() - roundStart) + " ms), kept the rest for later");
   return null;
 }
 
@@ -861,6 +891,9 @@ async function nextRound() {
     show(round);
     console.info("[wiki] question ready in " + Math.round(performance.now() - t0) + " ms (" +
       (waiting && waiting.tag === tag ? "prefetched" : "built fresh") + ") | attempts so far: " + wikiDebug.attempts);
+    console.info("[wiki] totals so far: " + wikiDebug.attempts + " articles checked, " + wikiDebug.noEdits + " had no funny edits, " +
+      wikiDebug.noPair + " edits had no usable sentence, " + wikiDebug.repeats + " repeats, " + wikiDebug.unsafe + " unsuitable articles, " +
+      wikiDebug.slowdowns + " slow-down replies (" + Math.round(wikiDebug.waitedMs / 1000) + " s spent waiting)");
     prefetchNext();
   } catch (e) {
     if (my !== ticket) return;
