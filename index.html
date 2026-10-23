@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v47</div>
+<div class="ver">v48</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -200,8 +200,8 @@ const $ = (id) => document.getElementById(id);
 // Politeness: only a few requests at once, a small gap between them, and when Wikipedia says
 // "slow down" every request waits. Its slow-down reply has no permission header, so the browser
 // shows it as a blocked ("Failed to fetch") request instead of a 429, and that counts too.
-const MAX_REQUESTS = TEST ? 2 : 3;
-const GAP_MS = TEST ? 400 : 120;
+const MAX_REQUESTS = 3;
+const GAP_MS = TEST ? 250 : 120;
 let inFlight = 0, pausedUntil = 0, nextStart = 0;
 const slotQueue = [];
 function takeSlot() {
@@ -439,6 +439,7 @@ const FUNNY_AMBIGUOUS = /\b(jokes?|joking|prank\w*|silly|silliness|puerile|juven
 const FUNNY_AI = /\b(?:AI|A\.I\.)(?!\w)/;
 const NOTE_ACTION = /\b(remov\w*|revert\w*|undo|undid|rv|rm|delet\w*|clean\w*|strip\w*|purg\w*|fix\w*|rewrit\w*|cut|trim\w*|restor\w*|per)\b/i;
 function isFunnyNote(c) {
+  c = c.replace(/(\S\s+)Vandals\b/g, "$1"); // the Vandals were a historic people, not vandalism
   if (BAD_NOTE.test(c) || BAD_TEXT.test(c)) return false;
   if (FUNNY_STRONG.test(c)) return true;
   return (FUNNY_AI_WORDS.test(c) || FUNNY_AI.test(c) || FUNNY_AMBIGUOUS.test(c)) && NOTE_ACTION.test(c);
@@ -584,7 +585,7 @@ async function diffPair(params, minChange, rand) {
       }
       const [partsA, partsB] = diffWords(sa, best);
       const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
-      if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
+      if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB, changed: changed });
     }
     if (!TEST && pairs.length > 0) {
       const pick = pairs[Math.floor(rand() * pairs.length)];
@@ -592,11 +593,11 @@ async function diffPair(params, minChange, rand) {
     }
     allPairs.push(...pairs);
   }
-  if (TEST && allPairs.length === 1) {
-    return { ...allPairs[0], candidates: 1, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
-  }
-  if (TEST && allPairs.length > 1) {
-    console.debug("[wiki] skipped edit " + params.torev + ": " + allPairs.length + " sentences were reworded, so the note may not be about the one shown");
+  if (TEST && allPairs.length > 0) {
+    // Several sentences were reworded: the note probably describes the biggest change, so use that one.
+    const top = allPairs.reduce((m, x) => (x.changed > m.changed ? x : m));
+    if (allPairs.length > 1) console.debug("[wiki] edit " + params.torev + ": " + allPairs.length + " sentences were reworded, using the most changed one");
+    return { ...top, candidates: allPairs.length, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
   }
   return null;
 }
