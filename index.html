@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v43</div>
+<div class="ver">v44</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -177,7 +177,7 @@ function save(key, value) {
 const seen = new Set(load("wikiSeen", []));
 // Articles shown lately, so the same article does not keep coming back (endless mode).
 let recentTitles = load("wikiTitles", []);
-function saveSeen() { save("wikiSeen", [...seen].slice(-4000)); }
+function saveSeen() { save("wikiSeen", [...seen].slice(-20000)); }
 // Pick up edits another tab of this browser has already shown.
 function syncSeen() { load("wikiSeen", []).forEach((k) => seen.add(k)); }
 // A short fingerprint of the two sentences, so the same joke added by different edits counts as a repeat.
@@ -200,8 +200,8 @@ const $ = (id) => document.getElementById(id);
 // Politeness: only a few requests at once, a small gap between them, and when Wikipedia says
 // "slow down" every request waits. Its slow-down reply has no permission header, so the browser
 // shows it as a blocked ("Failed to fetch") request instead of a 429, and that counts too.
-const MAX_REQUESTS = 3;
-const GAP_MS = 120;
+const MAX_REQUESTS = TEST ? 2 : 3;
+const GAP_MS = TEST ? 400 : 120;
 let inFlight = 0, pausedUntil = 0, nextStart = 0;
 const slotQueue = [];
 function takeSlot() {
