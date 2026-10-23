@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v39</div>
+<div class="ver">v40</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -633,7 +633,7 @@ async function makeRound(rand, isDaily, avoid) {
   progress("Reading the edit history of " + title + "...");
   const edits = await findFunnyEdits(title, rand);
   if (edits.length === 0) { wikiDebug.noEdits++; return null; }
-  const keep = (list) => list.forEach((rc) => { if (!isDaily && spare.length < 40) spare.push({ title: title, rc: rc }); });
+  const keep = (list) => list.forEach((rc) => { if (!isDaily && spare.length < 150) spare.push({ title: title, rc: rc }); });
   const tryNow = Math.min(edits.length, 4);
   for (let i = 0; i < tryNow; i++) {
     const round = await roundFromEdit(title, edits[i], rand, isDaily);
@@ -651,7 +651,7 @@ async function makeRound(rand, isDaily, avoid) {
 async function buildRound() {
   let lastError = null, done = false;
   const worker = async () => {
-    for (let n = 0; n < 25 && !done; n++) {
+    for (let n = 0; n < 120 && !done; n++) {
       try {
         const round = await makeRound(Math.random, false);
         if (round) return round;
