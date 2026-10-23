@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v45</div>
+<div class="ver">v47</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -352,9 +352,40 @@ async function revertedTitle(rand) {
   }
 }
 
+// Test mode: the articles with the most edits of all time (Wikipedia keeps this ranking), loaded once.
+let mostEditedPromise = null, mostEditedPool = [];
+function loadMostEdited() {
+  if (!mostEditedPromise) {
+    mostEditedPromise = (async () => {
+      const t0 = performance.now();
+      const titles = [];
+      try {
+        for (const offset of [0, 500]) {
+          const data = await api({ action: "query", list: "querypage", qppage: "Mostrevisions", qplimit: "500", qpoffset: String(offset) });
+          const rows = (data.query.querypage && data.query.querypage.results) || [];
+          rows.forEach((r) => titles.push(r.title));
+          if (rows.length < 500) break;
+        }
+      } catch (e) {
+        console.warn("[wiki] test mode: could not load the most-edited list (" + e.message + "), using recently vandalized articles instead");
+      }
+      const list = titles.filter((t) => !t.includes(":") && !/^(List of|Lists of|Deaths in)/.test(t) && !SUS.test(t) && !BAD_TEXT.test(t));
+      console.info("[wiki] test mode: " + list.length + " most-edited articles loaded (" + Math.round(performance.now() - t0) + " ms)");
+      return list;
+    })();
+  }
+  return mostEditedPromise;
+}
+async function mostEditedTitle(rand) {
+  const list = await loadMostEdited();
+  if (list.length === 0) return null;
+  if (mostEditedPool.length === 0) mostEditedPool = shuffle([...list], rand);
+  return mostEditedPool.pop();
+}
+
 async function pickTitle(popularChance, rand) {
-  if (TEST && rand() < 0.5) {
-    const hot = await revertedTitle(rand);
+  if (TEST && rand() < 0.6) {
+    const hot = (await mostEditedTitle(rand)) || (await revertedTitle(rand));
     if (hot) return hot;
   }
   if (rand() < popularChance) {
@@ -486,6 +517,7 @@ function isPlain(text) {
   if (SUS.test(text) || BAD_TEXT.test(text) || CONTROVERSY.test(text)) return false;
   if (/[|{}<>\[\]=]|http|www\.|&[a-z#0-9]+;/i.test(text)) return false;
   if (/\.(jpe?g|png|gif|svg|webp|pdf|ogg|mp3|tiff?)\b/i.test(text)) return false;
+  if (/\s[,;:.!?‚„]|[‚„]|\(\s*[;,)]/.test(text)) return false;
   if (!/^["“'(]?[A-Z0-9]/.test(text)) return false;
   if (!/[.!?]["”'’)]*$/.test(text)) return false;
   const letters = (text.match(/[A-Za-z]/g) || []).length;
@@ -528,6 +560,7 @@ async function diffPair(params, minChange, rand) {
     if (/\[\[(File|Image|Category|Media):/i.test(r + b)) return;
     rows.push([r, b]);
   });
+  const allPairs = [];
   for (const [r, b] of shuffle(rows, rand)) {
     const sentsA = splitSentences(clean(r)), sentsB = splitSentences(clean(b));
     const pairs = [];
@@ -544,14 +577,26 @@ async function diffPair(params, minChange, rand) {
       const shorter = Math.min(sa.length, best.length), longer = Math.max(sa.length, best.length);
       const stripEnd = (t) => t.replace(/[.!?"”'’)\s]+$/, "");
       if (stripEnd(sa).includes(stripEnd(best)) || stripEnd(best).includes(stripEnd(sa)) || shorter / longer < MIN_LENGTH_RATIO) continue;
+      const wordsOnly = (t) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+      if (wordsOnly(sa) === wordsOnly(best)) {
+        console.debug("[wiki] skipped a punctuation/capital-letter-only change: " + sa.slice(0, 80));
+        continue;
+      }
       const [partsA, partsB] = diffWords(sa, best);
       const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
       if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
     }
-    if (pairs.length > 0) {
+    if (!TEST && pairs.length > 0) {
       const pick = pairs[Math.floor(rand() * pairs.length)];
-      return { ...pick, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
+      return { ...pick, candidates: pairs.length, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
     }
+    allPairs.push(...pairs);
+  }
+  if (TEST && allPairs.length === 1) {
+    return { ...allPairs[0], candidates: 1, timeA: data.compare.fromtimestamp, timeB: data.compare.totimestamp };
+  }
+  if (TEST && allPairs.length > 1) {
+    console.debug("[wiki] skipped edit " + params.torev + ": " + allPairs.length + " sentences were reworded, so the note may not be about the one shown");
   }
   return null;
 }
@@ -663,6 +708,9 @@ async function roundFromEdit(title, rc, rand, isDaily) {
   const keyword = keywordOf(rc.note);
   wikiDebug.shown[keyword] = (wikiDebug.shown[keyword] || 0) + 1;
   console.info("[wiki] found:", title, "| keyword:", keyword, "| note:", rc.note);
+  console.info("[wiki] question details: " + title + " | edit " + rc.revid + " | note: " + rc.note + " | reworded sentences in edit: " + pair.candidates +
+    "\n  link: https://en.wikipedia.org/w/index.php?title=" + encodeURIComponent(title.replace(/ /g, "_")) + "&diff=" + rc.revid + "&oldid=" + rc.old_revid +
+    "\n  mistake: " + pair.textA + "\n  fix: " + pair.textB + "\n  (the order above is old then new; the old one is the mistake)");
   progress("Fetching the picture for " + title + "...");
   return {
     revid: rc.revid,
