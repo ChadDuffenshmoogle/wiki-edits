@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="ver">v38</div>
+<div class="ver">v39</div>
 <main>
   <h1>Wiki Edit War</h1>
   <p class="sub" id="sub">One version of a Wikipedia sentence is a fix. The other is the mistake it fixed.</p>
@@ -485,7 +485,8 @@ async function diffPair(params, minChange, rand) {
       if (!best) continue;
       // Skip glued-together pairs where one sentence just contains the other, or is far longer.
       const shorter = Math.min(sa.length, best.length), longer = Math.max(sa.length, best.length);
-      if (sa.includes(best) || best.includes(sa) || shorter / longer < 0.55) continue;
+      const stripEnd = (t) => t.replace(/[.!?"”'’)\s]+$/, "");
+      if (stripEnd(sa).includes(stripEnd(best)) || stripEnd(best).includes(stripEnd(sa)) || shorter / longer < 0.55) continue;
       const [partsA, partsB] = diffWords(sa, best);
       const changed = (partsA.filter((w) => w.d).length + partsB.filter((w) => w.d).length) / (partsA.length + partsB.length);
       if (changed >= minChange) pairs.push({ textA: sa, textB: best, partsA: partsA, partsB: partsB });
